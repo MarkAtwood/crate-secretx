@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "crate_secretsx",
+  "project_id": "4678eacb-ebec-4c27-9c4a-5feb1e5bea0d"
+}
