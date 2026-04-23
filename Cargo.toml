@@ -13,6 +13,7 @@ members = [
     "secretx-gcp-sm",
     "secretx-hashicorp-vault",
     "secretx-keyring",
+    "secretx-local-signing",
     "secretx-pkcs11",
     "secretx-wolfhsm",
     "secretx",
@@ -43,7 +44,14 @@ secretx-keyring = { path = "secretx-keyring", version = "0.1.0" }
 secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.1.0" }
 secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.1.0" }
 async-trait = "0.1"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+pkcs8 = { version = "0.10", features = ["std"] }
+rsa = { version = "0.9", features = ["sha2", "getrandom"] }
+secretx-local-signing = { path = "secretx-local-signing", version = "0.1.0" }
 serde_json = "1"
+sha2 = "0.10"
+signature = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync"] }
 zeroize = { version = "1", features = ["alloc"] }
