@@ -1,5 +1,13 @@
 //! Bitwarden Secrets Manager backend for secretx.
 //!
+//! # Integration test status
+//!
+//! Unit tests (URI parsing, error mapping) pass without credentials.
+//! Live integration tests require a Bitwarden Secrets Manager account
+//! (available on Teams/Enterprise plans) and a machine account access token.
+//! Set `SECRETX_BWS_TEST=1` and `BWS_ACCESS_TOKEN` to enable them.
+//! **Not yet integration-tested.**
+//!
 //! URI: `secretx://bitwarden/<project-name>/<secret-name>`
 //!
 //! Authentication is via the `BWS_ACCESS_TOKEN` environment variable, which

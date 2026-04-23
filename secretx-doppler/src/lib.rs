@@ -1,5 +1,12 @@
 //! Doppler backend for secretx.
 //!
+//! # Integration test status
+//!
+//! Unit tests (URI parsing, error mapping) pass without credentials.
+//! Live integration tests require a Doppler account and service token.
+//! Set `SECRETX_DOPPLER_TEST=1` and `DOPPLER_TOKEN` to enable them.
+//! **Not yet integration-tested.**
+//!
 //! URI: `secretx://doppler/<project>/<config>/<secret-name>`
 //!
 //! - `project` — Doppler project name

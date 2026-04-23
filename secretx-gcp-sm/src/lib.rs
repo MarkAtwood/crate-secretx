@@ -1,5 +1,12 @@
 //! GCP Secret Manager backend for secretx.
 //!
+//! # Integration test status
+//!
+//! Unit tests (URI parsing, error mapping) pass without credentials.
+//! Live integration tests require a GCP project with the Secret Manager API
+//! enabled. Set `SECRETX_GCP_TEST=1` and `GCP_ACCESS_TOKEN` to enable them.
+//! **Not yet integration-tested.**
+//!
 //! URI: `secretx://gcp-sm/<project>/<secret>[?version=<version>]`
 //!
 //! - `project` — GCP project ID

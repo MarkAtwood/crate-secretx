@@ -1,5 +1,13 @@
 //! Azure Key Vault backend for secretx.
 //!
+//! # Integration test status
+//!
+//! Unit tests (URI parsing, error mapping) pass without credentials.
+//! Live integration tests require an Azure subscription with a Key Vault
+//! instance. Set `SECRETX_AZURE_TEST=1`, `SECRETX_AZURE_VAULT`, and
+//! `SECRETX_AZURE_SECRET` env vars to enable them.
+//! **Not yet integration-tested.**
+//!
 //! URI: `secretx://azure-kv/<vault-name>/<secret-name>[?field=<json_field>]`
 //!
 //! - `vault-name` is the Azure Key Vault name (the subdomain part before `.vault.azure.net`)

@@ -1,5 +1,14 @@
 //! wolfHSM secure element backend for secretx.
 //!
+//! # Integration test status
+//!
+//! This backend is a **stub**. All operations return [`SecretError::Unavailable`]
+//! until the wolfHSM native library (`libwolfhsm`) is linked. Provide a
+//! `build.rs` that links the library, or set `WOLFHSM_LIB` to the path of
+//! `libwolfhsm.a` / `libwolfhsm.so`. Real hardware testing requires a
+//! wolfHSM device or the wolfHSM simulator.
+//! **Not yet integration-tested (native library not available in this environment).**
+//!
 //! Implements both [`SecretStore`] (NVM data objects) and [`SigningBackend`]
 //! (private keys resident on the wolfHSM device) over the wolfHSM C library.
 //!

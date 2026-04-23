@@ -157,8 +157,29 @@ crate's URI dispatch function.
 
 ## Status
 
-Early development. Core traits and types are defined and published. Backend implementations
-are in progress. The API may change before 1.0.
+Early development. The API may change before 1.0.
+
+All backends are implemented. Integration test coverage as of 2026-04-23:
+
+| Backend | Integration tested | Notes |
+|---------|-------------------|-------|
+| `env` | ✅ real I/O | reads live env vars |
+| `file` | ✅ real I/O | reads/writes real files |
+| `local-signing` | ✅ real crypto | sign + verify round-trip |
+| `cache` | ✅ real TTL logic | in-memory, no external service |
+| `aws-sm` | ✅ real AWS | tested against AWS Secrets Manager |
+| `aws-ssm` | ✅ real AWS | tested against AWS SSM Parameter Store |
+| `aws-kms` | ✅ real AWS | ECDSA P-256 and RSA-PSS 2048 sign/verify |
+| `hashicorp-vault` | ✅ local Vault | tested against Vault dev server |
+| `pkcs11` | ✅ SoftHSM2 | EC P-256 sign + data object get/put |
+| `azure-kv` | ⚠️ unit tests only | needs Azure subscription + Key Vault |
+| `gcp-sm` | ⚠️ unit tests only | needs GCP project + Secret Manager API |
+| `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
+| `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
+| `keyring` | ❌ headless fails | requires desktop keyring daemon; `put` succeeds but `get` returns `NotFound` on a headless server |
+| `wolfhsm` | ➖ stub only | returns `Unavailable`; requires wolfHSM native library + device |
+
+Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.
 
 ---
 

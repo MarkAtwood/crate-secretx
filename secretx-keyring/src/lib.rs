@@ -1,5 +1,15 @@
 //! OS keychain backend for secretx.
 //!
+//! # Integration test status
+//!
+//! Unit tests (URI parsing, error mapping) pass without a keyring daemon.
+//! The integration test (`SECRETX_KEYRING_INTEGRATION_TESTS=1`) requires a
+//! running desktop keyring daemon (macOS Keychain, Windows Credential Manager,
+//! or `gnome-keyring-daemon` / KWallet on Linux). On a headless Linux server
+//! `put` succeeds but `get` returns `NotFound` — **do not run in CI without
+//! a keyring daemon**.
+//! **Integration-tested on: macOS, Windows (not yet). Linux desktop: not yet.**
+//!
 //! URI: `secretx://keyring/<service>/<account>`
 //!
 //! ```rust,no_run
