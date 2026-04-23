@@ -2,7 +2,7 @@
 
 A backend-agnostic secrets retrieval library for Rust. One trait, many stores.
 
-**Status:** Speculative. Not started. Written to capture design thinking before it evaporates.
+**Status:** In progress. Core traits and types implemented and published (`secretx-core 0.1.0`). Backend implementations pending.
 
 ---
 
@@ -47,31 +47,33 @@ Backends are selected by URI. This keeps the call site backend-agnostic and make
 driven deployment trivial.
 
 ```
-secretsx://<backend>/<path>
+secretx://<backend>/<path>[?key=val&key2=val2]
 ```
+
+Absolute file paths use a double slash after the backend: `secretx://file//etc/keys/signing.key`.
 
 | URI | Backend | Notes |
 |-----|---------|-------|
-| `secretsx://aws-kms/alias/my-signing-key` | AWS KMS | Key ARN or alias; signing only |
-| `secretsx://aws-sm/prod/signing-key` | AWS Secrets Manager | Secret name `prod/signing-key` |
-| `secretsx://aws-sm/prod/signing-key?field=password` | AWS Secrets Manager | JSON field extraction |
-| `secretsx://aws-ssm/prod/signing-key` | AWS SSM Parameter Store | Parameter name `prod/signing-key`; SecureString decrypted automatically |
-| `secretsx://aws-ssm/prod/signing-key?version=3` | AWS SSM Parameter Store | Specific parameter version |
-| `secretsx://azure-kv/myvault/mysecret` | Azure Key Vault | Vault name + secret name |
-| `secretsx://bitwarden/myproject/SIGNING_KEY` | Bitwarden Secrets Manager | Project name + secret name |
-| `secretsx://doppler/myproject/prd/SIGNING_KEY` | Doppler | Project + config + secret name |
-| `secretsx://env/MY_SECRET` | Environment variable | `MY_SECRET` env var |
-| `secretsx://file//etc/keys/signing.key` | Filesystem | Absolute path after `file/` |
-| `secretsx://file/relative/path` | Filesystem | Relative to CWD |
-| `secretsx://gcp-sm/my-project/my-secret` | GCP Secret Manager | Project + secret name |
-| `secretsx://keyring/myapp/signing-key` | OS keychain | Service + account |
-| `secretsx://pkcs11/0/my-signing-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | Slot index + object label; `lib` path from URI or `PKCS11_LIB` env var |
-| `secretsx://vault/secret/data/myapp/key` | HashiCorp Vault | KV v2 path |
-| `secretsx://wolfhsm/my-signing-key` | wolfHSM | Object label; server transport configured via `WOLFHSM_SERVER` env var |
+| `secretx://aws-kms/alias/my-signing-key` | AWS KMS | Key ARN or alias; signing only |
+| `secretx://aws-sm/prod/signing-key` | AWS Secrets Manager | Secret name `prod/signing-key` |
+| `secretx://aws-sm/prod/signing-key?field=password` | AWS Secrets Manager | JSON field extraction |
+| `secretx://aws-ssm/prod/signing-key` | AWS SSM Parameter Store | Parameter name `prod/signing-key`; SecureString decrypted automatically |
+| `secretx://aws-ssm/prod/signing-key?version=3` | AWS SSM Parameter Store | Specific parameter version |
+| `secretx://azure-kv/myvault/mysecret` | Azure Key Vault | Vault name + secret name |
+| `secretx://bitwarden/myproject/SIGNING_KEY` | Bitwarden Secrets Manager | Project name + secret name |
+| `secretx://doppler/myproject/prd/SIGNING_KEY` | Doppler | Project + config + secret name |
+| `secretx://env/MY_SECRET` | Environment variable | `MY_SECRET` env var |
+| `secretx://file//etc/keys/signing.key` | Filesystem | Absolute path (double slash) |
+| `secretx://file/relative/path` | Filesystem | Relative to CWD |
+| `secretx://gcp-sm/my-project/my-secret` | GCP Secret Manager | Project + secret name |
+| `secretx://keyring/myapp/signing-key` | OS keychain | Service + account |
+| `secretx://pkcs11/0/my-signing-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | Slot index + object label; `lib` path from URI or `PKCS11_LIB` env var |
+| `secretx://vault/secret/data/myapp/key` | HashiCorp Vault | KV v2 path |
+| `secretx://wolfhsm/my-signing-key` | wolfHSM | Object label; server transport configured via `WOLFHSM_SERVER` env var |
 
-The `SecretStore::from_uri` constructor parses the URI and returns the appropriate backend
-implementation. Backends not compiled in (feature-gated) return a clear error at parse time, not
-at runtime.
+Each backend's `from_uri` constructor calls `SecretUri::parse` from `secretx-core` to parse the
+URI and validate the backend component. Backends not compiled in return a clear error at parse
+time, not at runtime. URI parsing does not make any network call or file read.
 
 ---
 
@@ -120,6 +122,36 @@ pub enum SecretError {
 }
 ```
 
+### `SecretUri`
+
+All backends parse URIs using this shared type from `secretx-core`. Backend constructors call
+`SecretUri::parse` rather than rolling their own string splitting, so URI parsing is consistent
+across the entire workspace.
+
+```rust
+pub struct SecretUri {
+    /// Backend name, e.g. `"aws-sm"`, `"file"`, `"env"`.
+    pub backend: String,
+    /// Backend-specific path, e.g. `"prod/signing-key"` or `"/etc/secrets/key"`.
+    pub path: String,
+    /// Query parameters, e.g. `?field=password` → `{"field": "password"}`.
+    pub params: HashMap<String, String>,
+}
+
+impl SecretUri {
+    pub fn parse(uri: &str) -> Result<Self, SecretError>;
+    pub fn param(&self, key: &str) -> Option<&str>;
+}
+```
+
+`parse` returns `SecretError::InvalidUri` if the URI does not start with `secretx://` or has an
+empty backend component. The `path` field preserves a leading `/` for absolute file paths
+(encoded with double slash: `secretx://file//etc/key` → `path = "/etc/key"`).
+
+Backend `from_uri` constructors are plain methods (not part of any trait). They call
+`SecretUri::parse`, validate the backend field matches their own name, then extract path and
+params to configure the struct.
+
 ### `SecretStore` trait
 
 ```rust
@@ -133,13 +165,13 @@ pub trait SecretStore: Send + Sync {
 
     /// Force a cache refresh for this secret. Returns the refreshed value.
     async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError>;
-
-    /// Parse a URI and return the appropriate backend.
-    fn from_uri(uri: &str) -> Result<Arc<dyn SecretStore>, SecretError>
-    where
-        Self: Sized;
 }
 ```
+
+`from_uri` is **not** part of this trait. Construction is not behavior. Each backend exposes its
+own `from_uri(uri: &str) -> Result<Self, SecretError>` as a plain associated function. URI
+dispatch across all backends is handled by `secretx::from_uri` in the umbrella crate — the only
+place in the workspace that contains `#[cfg(feature)]` guards.
 
 ### `SigningBackend` trait
 
@@ -416,7 +448,7 @@ guards. The only `#[cfg(feature = "...")]` in the entire workspace lives in the 
 umbrella crate's URI dispatch function — a few match arms, nothing else.
 
 ```
-secretx-core/            — SecretValue, SecretError, SecretStore trait, SigningBackend trait
+secretx-core/            — SecretValue, SecretError, SecretUri, SecretStore trait, SigningBackend trait
 secretx-cache/           — CachingStore<S: SecretStore>  (dep: secretx-core, tokio)
 secretx-aws-kms/         — AWS KMS backend               (dep: secretx-core, aws-sdk-kms, aws-config)
 secretx-aws-sm/          — AWS Secrets Manager           (dep: secretx-core, aws-sdk-secretsmanager, aws-config)
@@ -437,8 +469,8 @@ secretx/                 — umbrella: re-exports + URI dispatch  (optional deps
 ### The umbrella crate (`secretx`)
 
 `secretx` is the entry point for callers who want URI-driven backend selection. It re-exports
-`secretx_core::{SecretValue, SecretError, SecretStore, SigningBackend, SigningAlgorithm}` and
-provides a free function:
+`secretx_core::{SecretValue, SecretError, SecretUri, SecretStore, SigningBackend, SigningAlgorithm}`
+and provides a free function:
 
 ```rust
 pub fn from_uri(uri: &str) -> Result<Arc<dyn SecretStore>, SecretError>
@@ -472,7 +504,8 @@ directly (e.g. `secretx-aws-sm`) without pulling in `secretx` or any other backe
 ### `secretx-core`
 
 No optional dependencies. No `#[cfg]`. Dependencies: `zeroize`, `thiserror`, `async-trait`,
-`serde_json`. This is what backend crate authors depend on.
+`serde_json`. This is what backend crate authors depend on. Exports: `SecretValue`, `SecretError`,
+`SecretUri`, `SecretStore`, `SigningBackend`, `SigningAlgorithm`.
 
 ### `secretx-cache`
 
@@ -576,7 +609,7 @@ let pubkey_der = backend.public_key_der().await?;
 
 ## Comparison with Alternatives
 
-| | secretsx | Roll-your-own | aws-sdk-secretsmanager directly | config-rs |
+| | secretx | Roll-your-own | aws-sdk-secretsmanager directly | config-rs |
 |---|---|---|---|---|
 | Backend-agnostic | Yes | No | No | No |
 | SecretValue zeroing | Yes | Varies | No | No |
@@ -614,5 +647,4 @@ let pubkey_der = backend.public_key_der().await?;
    natural secrets store. The `keyring` crate covers this partially; a dedicated backend may
    be cleaner.
 
-7. **Crate name.** `secretsx` is taken on crates.io as of spec writing. Alternatives: `secrets-store`,
-   `secret-backend`, `vaulted`, `keyvault` (also taken), `stash-rs`.
+7. **Crate name.** Resolved: `secretx` is published on crates.io. URI scheme is `secretx://`.

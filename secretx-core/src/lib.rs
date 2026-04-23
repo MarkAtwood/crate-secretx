@@ -1,24 +1,18 @@
-//! Backend-agnostic secrets retrieval for Rust.
+//! Core traits and types for the secretx secrets retrieval library.
 //!
-//! Select a backend at runtime by URI:
-//!
-//! ```text
-//! secretx://env/MY_SECRET
-//! secretx://file//etc/keys/signing.key
-//! secretx://aws-sm/prod/signing-key
-//! secretx://vault/secret/data/myapp/key
-//! ```
-//!
-//! The call site never names a backend. Switching from file-based dev secrets
-//! to AWS Secrets Manager in prod is a one-line config change.
+//! Backend crates depend on this crate and implement [`SecretStore`] and/or
+//! [`SigningBackend`]. Use [`SecretUri::parse`] to parse `secretx://` URIs
+//! in backend constructors.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use zeroize::Zeroizing;
+
+// ── SecretValue ──────────────────────────────────────────────────────────────
 
 /// A secret value whose memory is zeroed on drop.
 ///
-/// Does not implement `Debug`, `Display`, or `Clone` to prevent accidental leakage.
-/// Use [`as_bytes`](SecretValue::as_bytes) for comparisons in tests.
+/// Does not implement `Debug`, `Display`, or `Clone` to prevent accidental
+/// leakage. Use [`as_bytes`](SecretValue::as_bytes) for comparisons in tests.
 pub struct SecretValue(Zeroizing<Vec<u8>>);
 
 impl SecretValue {
@@ -60,6 +54,8 @@ impl SecretValue {
     }
 }
 
+// ── SecretError ───────────────────────────────────────────────────────────────
+
 /// Errors returned by secret store operations.
 #[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
@@ -76,7 +72,7 @@ pub enum SecretError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// URI was syntactically invalid or named an unknown/uncompiled backend.
+    /// URI was syntactically invalid or named an unknown/disabled backend.
     #[error("invalid URI: {0}")]
     InvalidUri(String),
 
@@ -93,16 +89,106 @@ pub enum SecretError {
     },
 }
 
-/// A backend that retrieves and stores secrets.
+// ── SecretUri ─────────────────────────────────────────────────────────────────
+
+/// A parsed `secretx://` URI.
 ///
-/// # URI scheme
+/// All backend `from_uri` constructors should parse with this type rather than
+/// rolling their own string splitting.
+///
+/// # URI structure
 ///
 /// ```text
-/// secretx://<backend>/<path>[?field=<name>]
+/// secretx://<backend>/<path>[?key=val&key2=val2]
 /// ```
 ///
-/// Use [`from_uri`](SecretStore::from_uri) to obtain a backend from a URI string.
-/// Construction never makes a network call or file read.
+/// Absolute file paths use a double slash after the backend:
+///
+/// ```text
+/// secretx://file//etc/secrets/key   →  backend="file", path="/etc/secrets/key"
+/// secretx://file/relative/path      →  backend="file", path="relative/path"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretUri {
+    /// Backend name, e.g. `"aws-sm"`, `"file"`, `"env"`.
+    pub backend: String,
+    /// Backend-specific path, e.g. `"prod/signing-key"` or `"/etc/secrets/key"`.
+    pub path: String,
+    /// Query parameters, e.g. `?field=password` → `{"field": "password"}`.
+    pub params: HashMap<String, String>,
+}
+
+impl SecretUri {
+    const SCHEME: &'static str = "secretx://";
+
+    /// Parse a `secretx://` URI.
+    ///
+    /// Returns [`SecretError::InvalidUri`] if the URI does not start with
+    /// `secretx://` or has an empty backend component.
+    pub fn parse(uri: &str) -> Result<Self, SecretError> {
+        let rest = uri.strip_prefix(Self::SCHEME).ok_or_else(|| {
+            SecretError::InvalidUri(format!("URI must start with `secretx://`, got: {uri}"))
+        })?;
+
+        // Split query string from path.
+        let (path_part, query_part) = match rest.find('?') {
+            Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+            None => (rest, None),
+        };
+
+        // Split backend name from the rest of the path on the first '/'.
+        let (backend, raw_path) = match path_part.find('/') {
+            Some(i) => (&path_part[..i], &path_part[i + 1..]),
+            None => (path_part, ""),
+        };
+
+        if backend.is_empty() {
+            return Err(SecretError::InvalidUri(format!(
+                "missing backend name in URI: {uri}"
+            )));
+        }
+
+        // raw_path starts with '/' for absolute paths (the double-slash encoding):
+        //   secretx://file//etc/key  →  raw_path = "/etc/key"   (absolute)
+        //   secretx://file/rel/key   →  raw_path = "rel/key"    (relative)
+        let path = raw_path.to_string();
+
+        // Parse query parameters.
+        let mut params = HashMap::new();
+        if let Some(q) = query_part {
+            for pair in q.split('&').filter(|s| !s.is_empty()) {
+                match pair.find('=') {
+                    Some(i) => {
+                        params.insert(pair[..i].to_string(), pair[i + 1..].to_string());
+                    }
+                    None => {
+                        params.insert(pair.to_string(), String::new());
+                    }
+                }
+            }
+        }
+
+        Ok(SecretUri {
+            backend: backend.to_string(),
+            path,
+            params,
+        })
+    }
+
+    /// Return a query parameter value by key, or `None` if absent.
+    pub fn param(&self, key: &str) -> Option<&str> {
+        self.params.get(key).map(String::as_str)
+    }
+}
+
+// ── SecretStore ───────────────────────────────────────────────────────────────
+
+/// A backend that retrieves and stores secrets.
+///
+/// Implement this trait in a backend crate. Provide a `from_uri` constructor
+/// as a plain method (not part of this trait) that calls [`SecretUri::parse`]
+/// and validates the backend component. URI dispatch is handled by
+/// `secretx::from_uri` in the umbrella crate.
 #[async_trait::async_trait]
 pub trait SecretStore: Send + Sync {
     /// Retrieve a secret by name/path. Implementations may serve from cache.
@@ -113,15 +199,9 @@ pub trait SecretStore: Send + Sync {
 
     /// Force a cache refresh for this secret and return the refreshed value.
     async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError>;
-
-    /// Parse a URI and return the appropriate backend.
-    ///
-    /// Does not make any network call or file read — construction only.
-    /// Returns [`SecretError::InvalidUri`] for unknown or uncompiled backends.
-    fn from_uri(uri: &str) -> Result<Arc<dyn SecretStore>, SecretError>
-    where
-        Self: Sized;
 }
+
+// ── SigningBackend ────────────────────────────────────────────────────────────
 
 /// Key algorithm used by a [`SigningBackend`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,8 +213,8 @@ pub enum SigningAlgorithm {
 
 /// A signing backend where the private key never leaves the HSM.
 ///
-/// Implemented by AWS KMS, Azure Key Vault HSM, and local key backends.
-/// Call sites are identical regardless of backend.
+/// Implemented by AWS KMS, Azure Key Vault HSM, PKCS#11, wolfHSM, and local
+/// key backends. Call sites are identical regardless of backend.
 #[async_trait::async_trait]
 pub trait SigningBackend: Send + Sync {
     /// Sign `message` using the backend key. Returns raw signature bytes.
@@ -147,9 +227,13 @@ pub trait SigningBackend: Send + Sync {
     fn algorithm(&self) -> SigningAlgorithm;
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SecretValue tests
 
     #[test]
     fn secret_value_as_bytes() {
@@ -201,5 +285,75 @@ mod tests {
             v.extract_field("x"),
             Err(SecretError::DecodeFailed(_))
         ));
+    }
+
+    // SecretUri tests
+
+    #[test]
+    fn uri_env() {
+        let u = SecretUri::parse("secretx://env/MY_SECRET").unwrap();
+        assert_eq!(u.backend, "env");
+        assert_eq!(u.path, "MY_SECRET");
+        assert!(u.params.is_empty());
+    }
+
+    #[test]
+    fn uri_file_relative() {
+        let u = SecretUri::parse("secretx://file/relative/path/key").unwrap();
+        assert_eq!(u.backend, "file");
+        assert_eq!(u.path, "relative/path/key");
+    }
+
+    #[test]
+    fn uri_file_absolute() {
+        let u = SecretUri::parse("secretx://file//etc/secrets/key").unwrap();
+        assert_eq!(u.backend, "file");
+        assert_eq!(u.path, "/etc/secrets/key");
+    }
+
+    #[test]
+    fn uri_aws_sm_with_params() {
+        let u = SecretUri::parse("secretx://aws-sm/prod/signing-key?field=password&version=AWSCURRENT").unwrap();
+        assert_eq!(u.backend, "aws-sm");
+        assert_eq!(u.path, "prod/signing-key");
+        assert_eq!(u.param("field"), Some("password"));
+        assert_eq!(u.param("version"), Some("AWSCURRENT"));
+    }
+
+    #[test]
+    fn uri_pkcs11_with_lib() {
+        let u = SecretUri::parse("secretx://pkcs11/0/my-key?lib=/usr/lib/libsofthsm2.so").unwrap();
+        assert_eq!(u.backend, "pkcs11");
+        assert_eq!(u.path, "0/my-key");
+        assert_eq!(u.param("lib"), Some("/usr/lib/libsofthsm2.so"));
+    }
+
+    #[test]
+    fn uri_no_path() {
+        let u = SecretUri::parse("secretx://wolfhsm/my-key").unwrap();
+        assert_eq!(u.backend, "wolfhsm");
+        assert_eq!(u.path, "my-key");
+    }
+
+    #[test]
+    fn uri_wrong_scheme() {
+        assert!(matches!(
+            SecretUri::parse("https://example.com/secret"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn uri_empty_backend() {
+        assert!(matches!(
+            SecretUri::parse("secretx:///path"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn uri_missing_param() {
+        let u = SecretUri::parse("secretx://aws-sm/my-secret").unwrap();
+        assert_eq!(u.param("field"), None);
     }
 }
