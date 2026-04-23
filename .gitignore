@@ -1,4 +1,14 @@
 
+# Rust / Cargo
+/target/
+# Library crates do not commit Cargo.lock (reproducibility is the consumer's job)
+Cargo.lock
+
+# Editor / OS
+.DS_Store
+.idea/
+*.rs.bk
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
