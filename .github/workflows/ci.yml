@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Formatting ──────────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Spell-check ─────────────────────────────────────────────────────────────
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1
+
+  # ── Clippy ──────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --workspace -- -D warnings
+
+  # ── Feature powerset ────────────────────────────────────────────────────────
+  powerset:
+    name: Feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --feature-powerset --no-dev-deps -p secretx
+
+  # ── Tests ───────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  # ── MSRV ────────────────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.75)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  # ── Docs ────────────────────────────────────────────────────────────────────
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          RUSTDOCFLAGS="--cfg docsrs -D warnings"
+          cargo doc --no-deps --all-features --workspace
+
+  # ── Integration: AWS (LocalStack) ───────────────────────────────────────────
+  integration-aws:
+    name: Integration / AWS (LocalStack)
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: secretsmanager,ssm,kms
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Provision LocalStack resources
+        run: |
+          pip install awscli-local
+          # Secrets Manager
+          awslocal secretsmanager create-secret \
+            --name test/secretx --secret-string '{"password":"hunter2"}'
+          export SECRETX_AWS_SM_TEST_SECRET=test/secretx
+          export SECRETX_AWS_SM_TEST_SECRET_JSON=test/secretx
+          export SECRETX_AWS_SM_TEST_FIELD=password
+          # SSM Parameter Store
+          awslocal ssm put-parameter \
+            --name /test/secretx --value hunter2 --type SecureString
+          export SECRETX_AWS_SSM_TEST_PARAM=/test/secretx
+          # KMS (Ed25519 not available in LocalStack; use ECC_NIST_P256)
+          KEY_ID=$(awslocal kms create-key \
+            --key-spec ECC_NIST_P256 --key-usage SIGN_VERIFY \
+            --query 'KeyMetadata.KeyId' --output text)
+          export SECRETX_AWS_KMS_TEST_KEY_ID=$KEY_ID
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_ENDPOINT_URL: http://localhost:4566
+      - name: Run AWS integration tests
+        run: cargo test --features aws-sm,aws-ssm,aws-kms -p secretx-aws-sm -p secretx-aws-ssm -p secretx-aws-kms -- integration
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_ENDPOINT_URL: http://localhost:4566
+
+  # ── Integration: HashiCorp Vault ─────────────────────────────────────────────
+  integration-vault:
+    name: Integration / HashiCorp Vault
+    runs-on: ubuntu-latest
+    services:
+      vault:
+        image: hashicorp/vault:latest
+        ports:
+          - 8200:8200
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: root
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Provision Vault KV secret
+        run: |
+          export VAULT_ADDR=http://localhost:8200
+          export VAULT_TOKEN=root
+          vault kv put secret/test value=hunter2
+        env:
+          VAULT_ADDR: http://localhost:8200
+          VAULT_TOKEN: root
+      - name: Run Vault integration tests
+        run: cargo test -p secretx-hashicorp-vault -- integration
+        env:
+          VAULT_ADDR: http://localhost:8200
+          VAULT_TOKEN: root
+          SECRETX_VAULT_TEST_PATH: secret/data/test
+
+  # ── Integration: PKCS#11 (SoftHSM2) ─────────────────────────────────────────
+  integration-pkcs11:
+    name: Integration / PKCS#11 (SoftHSM2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install SoftHSM2
+        run: sudo apt-get install -y softhsm2
+      - name: Initialize SoftHSM2 token
+        run: |
+          softhsm2-util --init-token --free --label test-token \
+            --pin 1234 --so-pin 0000
+      - name: Run PKCS#11 integration tests
+        run: cargo test -p secretx-pkcs11 -- integration
+        env:
+          PKCS11_LIB: /usr/lib/softhsm/libsofthsm2.so
+          PKCS11_PIN: "1234"

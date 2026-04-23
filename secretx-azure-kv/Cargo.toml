@@ -8,7 +8,15 @@ authors.workspace = true
 description = "Azure Key Vault backend for secretx."
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
-repository = "https://github.com/MarkAtwood/crate-secretx"
+repository = "https://github.com/MarkAtwood/crate-secretsx"
 
 [dependencies]
 secretx-core = { workspace = true }
+async-trait = { workspace = true }
+azure_core = { workspace = true }
+azure_identity = { workspace = true }
+azure_security_keyvault_secrets = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -12,3 +12,8 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
 secretx-core = { workspace = true }
+async-trait = { workspace = true }
+keyring = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

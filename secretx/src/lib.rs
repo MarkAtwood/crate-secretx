@@ -21,6 +21,8 @@
 pub use secretx_core::{
     SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend,
 };
+#[cfg(feature = "blocking")]
+pub use secretx_core::get_blocking;
 
 use std::sync::Arc;
 
@@ -41,7 +43,7 @@ pub fn from_uri(uri: &str) -> Result<Arc<dyn SecretStore>, SecretError> {
         #[cfg(feature = "aws-sm")]
         "aws-sm" => secretx_aws_sm::AwsSmBackend::from_uri(uri).map(|b| Arc::new(b) as Arc<dyn SecretStore>),
         #[cfg(feature = "aws-ssm")]
-        "aws-ssm" => secretx_aws_ssm::AwsSsmBackend::from_uri(uri).map(|b| Arc::new(b) as Arc<dyn SecretStore>),
+        "aws-ssm" => secretx_aws_ssm::AwsSsmBackend::from_uri_sync(uri).map(|b| Arc::new(b) as Arc<dyn SecretStore>),
         #[cfg(feature = "azure-kv")]
         "azure-kv" => secretx_azure_kv::AzureKvBackend::from_uri(uri).map(|b| Arc::new(b) as Arc<dyn SecretStore>),
         #[cfg(feature = "bitwarden")]
