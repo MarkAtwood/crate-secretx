@@ -1,0 +1,15 @@
+[package]
+name = "secretx-bitwarden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Bitwarden Secrets Manager backend for secretx."
+keywords = ["secrets", "security"]
+categories = ["cryptography", "authentication"]
+repository = "https://github.com/MarkAtwood/crate-secretx"
+
+[dependencies]
+secretx-core = { workspace = true }
+secretx-cache = { workspace = true }

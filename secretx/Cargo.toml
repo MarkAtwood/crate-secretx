@@ -1,0 +1,46 @@
+[package]
+name = "secretx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Backend-agnostic secrets retrieval. One trait, many stores. URI-driven backend selection."
+keywords = ["secrets", "aws-secrets-manager", "vault", "keychain", "security"]
+categories = ["cryptography", "authentication"]
+repository = "https://github.com/MarkAtwood/crate-secretx"
+readme = "../README.md"
+
+[dependencies]
+secretx-core = { workspace = true }
+secretx-aws-kms = { workspace = true, optional = true }
+secretx-aws-sm = { workspace = true, optional = true }
+secretx-aws-ssm = { workspace = true, optional = true }
+secretx-azure-kv = { workspace = true, optional = true }
+secretx-bitwarden = { workspace = true, optional = true }
+secretx-cache = { workspace = true, optional = true }
+secretx-doppler = { workspace = true, optional = true }
+secretx-env = { workspace = true, optional = true }
+secretx-file = { workspace = true, optional = true }
+secretx-gcp-sm = { workspace = true, optional = true }
+secretx-hashicorp-vault = { workspace = true, optional = true }
+secretx-keyring = { workspace = true, optional = true }
+secretx-pkcs11 = { workspace = true, optional = true }
+secretx-wolfhsm = { workspace = true, optional = true }
+
+[features]
+default = ["env", "file"]
+aws-kms = ["dep:secretx-aws-kms"]
+aws-sm = ["dep:secretx-aws-sm"]
+aws-ssm = ["dep:secretx-aws-ssm"]
+azure-kv = ["dep:secretx-azure-kv"]
+bitwarden = ["dep:secretx-bitwarden"]
+cache = ["dep:secretx-cache"]
+doppler = ["dep:secretx-doppler"]
+env = ["dep:secretx-env"]
+file = ["dep:secretx-file"]
+gcp-sm = ["dep:secretx-gcp-sm"]
+hashicorp-vault = ["dep:secretx-hashicorp-vault"]
+keyring = ["dep:secretx-keyring"]
+pkcs11 = ["dep:secretx-pkcs11"]
+wolfhsm = ["dep:secretx-wolfhsm"]

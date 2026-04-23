@@ -1,0 +1,17 @@
+[package]
+name = "secretx-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core traits and types for the secretx secrets retrieval library."
+keywords = ["secrets", "security", "cryptography"]
+categories = ["cryptography", "authentication"]
+repository = "https://github.com/MarkAtwood/crate-secretx"
+
+[dependencies]
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
