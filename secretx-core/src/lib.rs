@@ -227,6 +227,60 @@ pub trait SigningBackend: Send + Sync {
     fn algorithm(&self) -> SigningAlgorithm;
 }
 
+// ── Blocking adapter ─────────────────────────────────────────────────────────
+
+/// Synchronous wrapper for [`SecretStore::get`].
+///
+/// Works both inside an existing tokio runtime and outside one (creates a
+/// single-threaded runtime for the call).  When called from within an existing
+/// runtime the call is offloaded to a scoped OS thread with its own runtime so
+/// that `block_on` does not panic.
+///
+/// # Panics
+/// Does not panic in normal use.  Panics only if the spawned helper thread
+/// itself panics (i.e. if tokio runtime construction fails).
+#[cfg(feature = "blocking")]
+pub fn get_blocking(store: &dyn SecretStore, name: &str) -> Result<SecretValue, SecretError> {
+    // When called from outside any tokio runtime, spin up a one-shot
+    // current-thread runtime directly on this thread.
+    //
+    // When called from inside an existing runtime (current_thread or
+    // multi-thread), block_on would panic if called on the same thread.
+    // Instead, use std::thread::scope to spawn a scoped thread that borrows
+    // `store` and `name` safely. The scope guarantees the thread is joined
+    // before it exits, so no lifetime transmutation is needed.
+    match tokio::runtime::Handle::try_current() {
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(|e| SecretError::Backend {
+                backend: "blocking",
+                source: e.into(),
+            })?
+            .block_on(store.get(name)),
+        Ok(_) => {
+            let mut result: Option<Result<SecretValue, SecretError>> = None;
+            std::thread::scope(|s| {
+                let join = s.spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .map_err(|e| SecretError::Backend {
+                            backend: "blocking",
+                            source: e.into(),
+                        })?
+                        .block_on(store.get(name))
+                });
+                result = Some(join.join().unwrap_or_else(|_| {
+                    Err(SecretError::Backend {
+                        backend: "blocking",
+                        source: "get_blocking thread panicked".into(),
+                    })
+                }));
+            });
+            result.expect("scope always sets result before exiting")
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -355,5 +409,30 @@ mod tests {
     fn uri_missing_param() {
         let u = SecretUri::parse("secretx://aws-sm/my-secret").unwrap();
         assert_eq!(u.param("field"), None);
+    }
+
+    #[cfg(feature = "blocking")]
+    #[test]
+    fn get_blocking_outside_runtime() {
+        use std::sync::Arc;
+
+        struct FakeStore;
+
+        #[async_trait::async_trait]
+        impl SecretStore for FakeStore {
+            async fn get(&self, name: &str) -> Result<SecretValue, SecretError> {
+                Ok(SecretValue::new(format!("value-for-{name}").into_bytes()))
+            }
+            async fn put(&self, _: &str, _: SecretValue) -> Result<(), SecretError> {
+                Ok(())
+            }
+            async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError> {
+                self.get(name).await
+            }
+        }
+
+        let store = Arc::new(FakeStore);
+        let v = get_blocking(store.as_ref(), "my-key").unwrap();
+        assert_eq!(v.as_bytes(), b"value-for-my-key");
     }
 }

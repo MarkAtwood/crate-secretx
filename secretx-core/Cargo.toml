@@ -14,4 +14,8 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
 zeroize = { workspace = true }
+
+[features]
+blocking = ["dep:tokio"]
