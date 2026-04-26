@@ -6,17 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "AWS SSM Parameter Store backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
-secretx-core = { workspace = true }
+secretx-core = { workspace = true, features = ["blocking"] }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-ssm = { workspace = true }
+inventory = { workspace = true }
 tokio = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }

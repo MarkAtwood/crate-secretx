@@ -6,13 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Filesystem backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
 async-trait = { workspace = true }
+inventory = { workspace = true }
 secretx-core = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }

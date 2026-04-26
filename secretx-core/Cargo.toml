@@ -6,16 +6,20 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Core traits and types for the secretx secrets retrieval library."
+readme = "README.md"
 keywords = ["secrets", "security", "cryptography"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
 async-trait = { workspace = true }
-serde_json = { workspace = true }
+inventory = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt"] }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 
 [features]
 blocking = ["dep:tokio"]

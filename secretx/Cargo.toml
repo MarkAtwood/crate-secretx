@@ -13,6 +13,7 @@ readme = "../README.md"
 
 [dependencies]
 secretx-core = { workspace = true }
+inventory = { workspace = true }
 secretx-aws-kms = { workspace = true, optional = true }
 secretx-aws-sm = { workspace = true, optional = true }
 secretx-aws-ssm = { workspace = true, optional = true }
@@ -25,6 +26,7 @@ secretx-file = { workspace = true, optional = true }
 secretx-gcp-sm = { workspace = true, optional = true }
 secretx-hashicorp-vault = { workspace = true, optional = true }
 secretx-keyring = { workspace = true, optional = true }
+secretx-local-signing = { workspace = true, optional = true }
 secretx-pkcs11 = { workspace = true, optional = true }
 secretx-wolfhsm = { workspace = true, optional = true }
 
@@ -42,6 +44,7 @@ file = ["dep:secretx-file"]
 gcp-sm = ["dep:secretx-gcp-sm"]
 hashicorp-vault = ["dep:secretx-hashicorp-vault"]
 keyring = ["dep:secretx-keyring"]
+local-signing = ["dep:secretx-local-signing"]
 pkcs11 = ["dep:secretx-pkcs11"]
 wolfhsm = ["dep:secretx-wolfhsm"]
 blocking = ["secretx-core/blocking"]

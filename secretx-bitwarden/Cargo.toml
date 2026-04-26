@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Bitwarden Secrets Manager backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
@@ -14,8 +15,7 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
 bitwarden = { workspace = true }
+inventory = { workspace = true }
+tokio = { workspace = true }
 uuid = { version = "1" }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }

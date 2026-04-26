@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Local file/env signing backend for secretx (Ed25519, P-256, RSA-PSS-2048)."
+readme = "README.md"
 keywords = ["secrets", "signing", "ed25519", "p256", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
@@ -13,13 +14,12 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 [dependencies]
 async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
+inventory = { workspace = true }
 p256 = { workspace = true }
 pkcs8 = { workspace = true }
 rsa = { workspace = true }
 secretx-core = { workspace = true }
 sha2 = { workspace = true }
 signature = { workspace = true }
+tokio = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }

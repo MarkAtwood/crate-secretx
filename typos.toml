@@ -1,0 +1,3 @@
+[default.extend-words]
+# HashiCorp is a proper noun (the company that makes Vault)
+Hashi = "Hashi"

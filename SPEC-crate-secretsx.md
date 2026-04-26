@@ -47,29 +47,29 @@ Backends are selected by URI. This keeps the call site backend-agnostic and make
 driven deployment trivial.
 
 ```
-secretx://<backend>/<path>[?key=val&key2=val2]
+secretx:<backend>:<path>[?key=val&key2=val2]
 ```
 
-Absolute file paths use a double slash after the backend: `secretx://file//etc/keys/signing.key`.
+Absolute file paths use a leading `/` in the path component: `secretx:file:/etc/keys/signing.key`.
 
 | URI | Backend | Notes |
 |-----|---------|-------|
-| `secretx://aws-kms/alias/my-signing-key` | AWS KMS | Key ARN or alias; signing only |
-| `secretx://aws-sm/prod/signing-key` | AWS Secrets Manager | Secret name `prod/signing-key` |
-| `secretx://aws-sm/prod/signing-key?field=password` | AWS Secrets Manager | JSON field extraction |
-| `secretx://aws-ssm/prod/signing-key` | AWS SSM Parameter Store | Parameter name `prod/signing-key`; SecureString decrypted automatically |
-| `secretx://aws-ssm/prod/signing-key?version=3` | AWS SSM Parameter Store | Specific parameter version |
-| `secretx://azure-kv/myvault/mysecret` | Azure Key Vault | Vault name + secret name |
-| `secretx://bitwarden/myproject/SIGNING_KEY` | Bitwarden Secrets Manager | Project name + secret name |
-| `secretx://doppler/myproject/prd/SIGNING_KEY` | Doppler | Project + config + secret name |
-| `secretx://env/MY_SECRET` | Environment variable | `MY_SECRET` env var |
-| `secretx://file//etc/keys/signing.key` | Filesystem | Absolute path (double slash) |
-| `secretx://file/relative/path` | Filesystem | Relative to CWD |
-| `secretx://gcp-sm/my-project/my-secret` | GCP Secret Manager | Project + secret name |
-| `secretx://keyring/myapp/signing-key` | OS keychain | Service + account |
-| `secretx://pkcs11/0/my-signing-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | Slot index + object label; `lib` path from URI or `PKCS11_LIB` env var |
-| `secretx://vault/secret/data/myapp/key` | HashiCorp Vault | KV v2 path |
-| `secretx://wolfhsm/my-signing-key` | wolfHSM | Object label; server transport configured via `WOLFHSM_SERVER` env var |
+| `secretx:aws-kms:alias/my-signing-key` | AWS KMS | Key ARN or alias; signing only |
+| `secretx:aws-sm:prod/signing-key` | AWS Secrets Manager | Secret name `prod/signing-key` |
+| `secretx:aws-sm:prod/signing-key?field=password` | AWS Secrets Manager | JSON field extraction |
+| `secretx:aws-ssm:prod/signing-key` | AWS SSM Parameter Store | Parameter name `prod/signing-key`; SecureString decrypted automatically |
+| `secretx:aws-ssm:prod/signing-key?version=3` | AWS SSM Parameter Store | Specific parameter version |
+| `secretx:azure-kv:myvault/mysecret` | Azure Key Vault | Vault name + secret name |
+| `secretx:bitwarden:myproject/SIGNING_KEY` | Bitwarden Secrets Manager | Project name + secret name |
+| `secretx:doppler:myproject/prd/SIGNING_KEY` | Doppler | Project + config + secret name |
+| `secretx:env:MY_SECRET` | Environment variable | `MY_SECRET` env var |
+| `secretx:file:/etc/keys/signing.key` | Filesystem | Absolute path |
+| `secretx:file:relative/path` | Filesystem | Relative to CWD |
+| `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | Project + secret name |
+| `secretx:keyring:myapp/signing-key` | OS keychain | Service + account |
+| `secretx:pkcs11:0/my-signing-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | Slot index + object label; `lib` path from URI or `PKCS11_LIB` env var |
+| `secretx:vault:secret/myapp/key` | HashiCorp Vault | KV v2 path |
+| `secretx:wolfhsm:my-signing-key` | wolfHSM | Object label; server transport configured via `WOLFHSM_SERVER` env var |
 
 Each backend's `from_uri` constructor calls `SecretUri::parse` from `secretx-core` to parse the
 URI and validate the backend component. Backends not compiled in return a clear error at parse
@@ -144,9 +144,9 @@ impl SecretUri {
 }
 ```
 
-`parse` returns `SecretError::InvalidUri` if the URI does not start with `secretx://` or has an
+`parse` returns `SecretError::InvalidUri` if the URI does not start with `secretx:` or has an
 empty backend component. The `path` field preserves a leading `/` for absolute file paths
-(encoded with double slash: `secretx://file//etc/key` → `path = "/etc/key"`).
+(`secretx:file:/etc/key` → `path = "/etc/key"`).
 
 Backend `from_uri` constructors are plain methods (not part of any trait). They call
 `SecretUri::parse`, validate the backend field matches their own name, then extract path and
@@ -188,7 +188,7 @@ pub trait SigningBackend: Send + Sync {
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError>;
 
     /// Key algorithm. Used by callers to construct the right verifier.
-    fn algorithm(&self) -> SigningAlgorithm;
+    fn algorithm(&self) -> Result<SigningAlgorithm, SecretError>;
 }
 
 pub enum SigningAlgorithm {
@@ -572,10 +572,10 @@ Via the umbrella crate (URI dispatch, feature `aws-sm` + `file` enabled):
 use secretx::{SecretStore, SecretValue};
 use std::sync::Arc;
 
-// In dev: secretx://file//etc/dev-secrets/signing.key
-// In prod: secretx://aws-sm/prod/usenet-ipfs/signing-key
+// In dev: secretx:file:/etc/dev-secrets/signing.key
+// In prod: secretx:aws-sm:prod/usenet-ipfs/signing-key
 let uri = std::env::var("SIGNING_KEY_URI")
-    .unwrap_or_else(|_| "secretx://file//etc/dev-secrets/signing.key".into());
+    .unwrap_or_else(|_| "secretx:file:/etc/dev-secrets/signing.key".into());
 
 let store: Arc<dyn SecretStore> = secretx::from_uri(&uri)?;
 let key_bytes: SecretValue = store.get("signing-key").await?;
@@ -590,7 +590,7 @@ Via a backend crate directly (no umbrella, no URI dispatch):
 use secretx_aws_sm::AwsSmBackend;
 use secretx_core::SecretStore;
 
-let store = AwsSmBackend::from_uri("secretx://aws-sm/prod/signing-key")?;
+let store = AwsSmBackend::from_uri("secretx:aws-sm:prod/signing-key")?;
 let key_bytes = store.get("prod/signing-key").await?;
 ```
 
@@ -600,7 +600,7 @@ For signing with AWS KMS directly:
 use secretx_aws_kms::AwsKmsBackend;
 use secretx_core::SigningBackend;
 
-let backend = AwsKmsBackend::from_uri("secretx://aws-kms/alias/usenet-ipfs-signing-key")?;
+let backend = AwsKmsBackend::from_uri("secretx:aws-kms:alias/usenet-ipfs-signing-key")?;
 let signature = backend.sign(&message_bytes).await?;
 let pubkey_der = backend.public_key_der().await?;
 ```
@@ -647,4 +647,4 @@ let pubkey_der = backend.public_key_der().await?;
    natural secrets store. The `keyring` crate covers this partially; a dedicated backend may
    be cleaner.
 
-7. **Crate name.** Resolved: `secretx` is published on crates.io. URI scheme is `secretx://`.
+7. **Crate name.** Resolved: `secretx` is published on crates.io. URI scheme is `secretx:`.

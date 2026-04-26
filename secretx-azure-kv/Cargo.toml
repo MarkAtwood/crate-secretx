@@ -6,9 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Azure Key Vault backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
-repository = "https://github.com/MarkAtwood/crate-secretsx"
+repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
 secretx-core = { workspace = true }
@@ -16,7 +17,8 @@ async-trait = { workspace = true }
 azure_core = { workspace = true }
 azure_identity = { workspace = true }
 azure_security_keyvault_secrets = { workspace = true }
-zeroize = { workspace = true }
+inventory = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true }

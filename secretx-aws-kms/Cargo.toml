@@ -6,16 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "AWS KMS backend for secretx (signing only)."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 
 [dependencies]
-secretx-core = { workspace = true }
+secretx-core = { workspace = true, features = ["blocking"] }
 async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-sdk-kms = { workspace = true }
+sha2 = { workspace = true }
+inventory = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+p256 = { workspace = true }
+pkcs8 = { workspace = true }
+rsa = { workspace = true }

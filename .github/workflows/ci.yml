@@ -30,6 +30,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: crate-ci/typos@v1
 
+  # ── Security audit ──────────────────────────────────────────────────────────
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Clippy ──────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy
@@ -67,6 +77,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
 
+  # ── Tests (default features) ────────────────────────────────────────────────
+  # The published crate defaults to ["env", "file"] only. Verify that the
+  # default and no-default feature sets compile and pass tests so regressions
+  # in those paths are caught independently of --all-features.
+  test-default-features:
+    name: Test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo test --workspace --no-default-features
+
   # ── MSRV ────────────────────────────────────────────────────────────────────
   msrv:
     name: MSRV (1.75)
@@ -95,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:3.5
         ports:
           - 4566:4566
         env:
@@ -141,7 +165,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       vault:
-        image: hashicorp/vault:latest
+        image: hashicorp/vault:1.17
         ports:
           - 8200:8200
         env:

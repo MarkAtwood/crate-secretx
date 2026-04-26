@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use secretx_cache::CachingStore;
-use secretx_core::{SecretError, SecretStore, SecretValue};
+use secretx_core::{SecretError, SecretStore, SecretValue, WritableSecretStore};
 
 // ── Mock backend ──────────────────────────────────────────────────────────────
 //
@@ -46,21 +46,24 @@ impl MockStore {
 
 #[async_trait]
 impl SecretStore for MockStore {
-    async fn get(&self, _name: &str) -> Result<SecretValue, SecretError> {
+    async fn get(&self) -> Result<SecretValue, SecretError> {
         *self.get_count.lock().unwrap() += 1;
         Ok(SecretValue::new(self.value.as_bytes().to_vec()))
     }
 
-    async fn put(&self, _name: &str, _value: SecretValue) -> Result<(), SecretError> {
-        *self.put_count.lock().unwrap() += 1;
-        Ok(())
-    }
-
-    async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError> {
+    async fn refresh(&self) -> Result<SecretValue, SecretError> {
         *self.refresh_count.lock().unwrap() += 1;
         // Re-fetch via get so the mock accurately simulates what a real backend
         // does: refresh goes to the source and returns a fresh value.
-        self.get(name).await
+        self.get().await
+    }
+}
+
+#[async_trait]
+impl WritableSecretStore for MockStore {
+    async fn put(&self, _value: SecretValue) -> Result<(), SecretError> {
+        *self.put_count.lock().unwrap() += 1;
+        Ok(())
     }
 }
 
@@ -81,11 +84,11 @@ fn make_cache(value: &str, ttl: Duration) -> (CachingStore<MockStore>, Arc<MockS
 async fn cache_hit_within_ttl() {
     let (cache, mock) = make_cache("correct-horse-battery-staple", Duration::from_secs(60));
 
-    let first = cache.get("key").await.unwrap();
+    let first = cache.get().await.unwrap();
     assert_eq!(first.as_bytes(), b"correct-horse-battery-staple");
     assert_eq!(mock.get_count(), 1, "inner get called once on first fetch");
 
-    let second = cache.get("key").await.unwrap();
+    let second = cache.get().await.unwrap();
     assert_eq!(second.as_bytes(), b"correct-horse-battery-staple");
     assert_eq!(mock.get_count(), 1, "inner get NOT called again within TTL");
 }
@@ -96,13 +99,13 @@ async fn cache_hit_within_ttl() {
 async fn cache_miss_after_ttl_expiry() {
     let (cache, mock) = make_cache("tr0ub4dor&3", Duration::from_millis(1));
 
-    let first = cache.get("key").await.unwrap();
+    let first = cache.get().await.unwrap();
     assert_eq!(first.as_bytes(), b"tr0ub4dor&3");
     assert_eq!(mock.get_count(), 1, "inner get called on first fetch");
 
     std::thread::sleep(Duration::from_millis(5));
 
-    let second = cache.get("key").await.unwrap();
+    let second = cache.get().await.unwrap();
     assert_eq!(second.as_bytes(), b"tr0ub4dor&3");
     assert_eq!(
         mock.get_count(),
@@ -116,9 +119,9 @@ async fn cache_miss_after_ttl_expiry() {
 async fn ttl_zero_never_caches() {
     let (cache, mock) = make_cache("s3cr3t", Duration::ZERO);
 
-    cache.get("key").await.unwrap();
-    cache.get("key").await.unwrap();
-    cache.get("key").await.unwrap();
+    cache.get().await.unwrap();
+    cache.get().await.unwrap();
+    cache.get().await.unwrap();
 
     assert_eq!(
         mock.get_count(),
@@ -140,7 +143,7 @@ async fn refresh_bypasses_cache() {
     let (cache, mock) = make_cache("initial-value", Duration::from_secs(60));
 
     // Populate cache via get.
-    let v = cache.get("key").await.unwrap();
+    let v = cache.get().await.unwrap();
     assert_eq!(v.as_bytes(), b"initial-value");
     assert_eq!(
         mock.get_count(),
@@ -150,7 +153,7 @@ async fn refresh_bypasses_cache() {
     assert_eq!(mock.refresh_count(), 0, "refresh not yet called");
 
     // refresh must bypass cache and call inner refresh.
-    let refreshed = cache.refresh("key").await.unwrap();
+    let refreshed = cache.refresh().await.unwrap();
     assert_eq!(
         refreshed.as_bytes(),
         b"initial-value",
@@ -163,7 +166,7 @@ async fn refresh_bypasses_cache() {
     // A subsequent get within TTL must be served from the cache that refresh
     // populated; inner get must NOT be called again.
     let get_count_after_refresh = mock.get_count();
-    let after = cache.get("key").await.unwrap();
+    let after = cache.get().await.unwrap();
     assert_eq!(after.as_bytes(), b"initial-value");
     assert_eq!(
         mock.get_count(),
@@ -180,14 +183,14 @@ async fn put_updates_cache() {
 
     // put a new value — inner get must not be called at all.
     cache
-        .put("key", SecretValue::new(b"updated".to_vec()))
+        .put(SecretValue::new(b"updated".to_vec()))
         .await
         .unwrap();
     assert_eq!(mock.put_count(), 1, "inner put called exactly once");
     assert_eq!(mock.get_count(), 0, "inner get not called during put");
 
     // get within TTL must be served from cache populated by put.
-    let v = cache.get("key").await.unwrap();
+    let v = cache.get().await.unwrap();
     assert_eq!(
         v.as_bytes(),
         b"updated",
@@ -197,35 +200,5 @@ async fn put_updates_cache() {
         mock.get_count(),
         0,
         "inner get not called after put; served from cache"
-    );
-}
-
-/// Different keys are cached independently.
-///
-/// Sequence: get(key1), get(key2), get(key1)
-/// Expected: inner get_count == 2 (key1 served from cache on third call).
-#[tokio::test]
-async fn different_keys_cached_independently() {
-    let (cache, mock) = make_cache("shared-value", Duration::from_secs(60));
-
-    let v1a = cache.get("key1").await.unwrap();
-    assert_eq!(v1a.as_bytes(), b"shared-value");
-    assert_eq!(mock.get_count(), 1, "key1 fetched from inner store");
-
-    let v2 = cache.get("key2").await.unwrap();
-    assert_eq!(v2.as_bytes(), b"shared-value");
-    assert_eq!(
-        mock.get_count(),
-        2,
-        "key2 fetched from inner store (different key)"
-    );
-
-    // key1 must be served from cache.
-    let v1b = cache.get("key1").await.unwrap();
-    assert_eq!(v1b.as_bytes(), b"shared-value");
-    assert_eq!(
-        mock.get_count(),
-        2,
-        "key1 served from cache on third call; inner get count stays at 2"
     );
 }

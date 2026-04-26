@@ -6,17 +6,17 @@
 //! # URI format
 //!
 //! ```text
-//! secretx://local-signing/<key_path>?algorithm=<algo>
+//! secretx:local-signing:<key_path>?algorithm=<algo>
 //! ```
 //!
 //! Where `<algo>` is one of `ed25519`, `p256`, or `rsa-pss-2048`, and
 //! `<key_path>` is the path to the PKCS#8 DER-encoded private key file.
-//! Use a double slash for absolute paths:
+//! Use a leading `/` for absolute paths:
 //!
 //! ```text
-//! secretx://local-signing//etc/secrets/ed25519.der?algorithm=ed25519
-//! secretx://local-signing/relative/key.der?algorithm=p256
-//! secretx://local-signing//etc/secrets/rsa.der?algorithm=rsa-pss-2048
+//! secretx:local-signing:/etc/secrets/ed25519.der?algorithm=ed25519
+//! secretx:local-signing:relative/key.der?algorithm=p256
+//! secretx:local-signing:/etc/secrets/rsa.der?algorithm=rsa-pss-2048
 //! ```
 //!
 //! # Example
@@ -27,7 +27,7 @@
 //! use secretx_core::SigningBackend;
 //!
 //! let backend = LocalSigningBackend::from_uri(
-//!     "secretx://local-signing//etc/secrets/ed25519.der?algorithm=ed25519",
+//!     "secretx:local-signing:/etc/secrets/ed25519.der?algorithm=ed25519",
 //! )?;
 //! let sig = backend.sign(b"hello world").await?;
 //! # Ok(())
@@ -44,7 +44,13 @@ use zeroize::Zeroizing;
 enum LocalKey {
     Ed25519(ed25519_dalek::SigningKey),
     P256(p256::ecdsa::SigningKey),
-    RsaPss2048(rsa::RsaPrivateKey),
+    // Wrapped in Arc so sign() can clone the Arc (a pointer copy) for
+    // spawn_blocking rather than cloning the full RSA key material on every
+    // call.  SigningKey<Sha256> implements ZeroizeOnDrop, so the key is
+    // zeroed when the last Arc drops — either when LocalSigningBackend is
+    // dropped (after any in-flight sign tasks complete) or when the sign
+    // task's clone drops, whichever is last.
+    RsaPss2048(std::sync::Arc<rsa::pss::SigningKey<sha2::Sha256>>),
 }
 
 // ── Backend ───────────────────────────────────────────────────────────────────
@@ -58,23 +64,23 @@ pub struct LocalSigningBackend {
 }
 
 impl LocalSigningBackend {
-    /// Construct from a `secretx://local-signing/<path>?algorithm=<algo>` URI.
+    /// Construct from a `secretx:local-signing:<path>?algorithm=<algo>` URI.
     ///
     /// Reads and parses the key file eagerly. Does not retain raw key bytes
     /// after construction — they are zeroed when the local `Zeroizing` buffer
     /// is dropped.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend != "local-signing" {
+        if parsed.backend() != "local-signing" {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `local-signing`, got `{}`",
-                parsed.backend
+                parsed.backend()
             )));
         }
-        if parsed.path.is_empty() {
+        if parsed.path().is_empty() {
             return Err(SecretError::InvalidUri(
                 "local-signing URI requires a key path: \
-                 secretx://local-signing/<path>?algorithm=<algo>"
+                 secretx:local-signing:<path>?algorithm=<algo>"
                     .into(),
             ));
         }
@@ -90,13 +96,13 @@ impl LocalSigningBackend {
 
         // Read key bytes into a zeroizing buffer so raw material is cleared
         // after parsing regardless of success or failure.
-        let key_bytes: Zeroizing<Vec<u8>> = std::fs::read(&parsed.path)
+        let key_bytes: Zeroizing<Vec<u8>> = std::fs::read(parsed.path())
             .map(Zeroizing::new)
             .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => SecretError::Backend {
-                    backend: "local-signing",
-                    source: format!("key file not found: {}", parsed.path).into(),
-                },
+                // NotFound maps to SecretError::NotFound so callers that check
+                // for a missing key (e.g. to fall back to another backend) see
+                // the same error variant as every other backend.
+                std::io::ErrorKind::NotFound => SecretError::NotFound,
                 _ => SecretError::Backend {
                     backend: "local-signing",
                     source: e.into(),
@@ -149,14 +155,17 @@ fn parse_key(
                     source: format!("RSA PKCS#8 parse error: {e}").into(),
                 }
             })?;
+            // Wrap in Arc so sign() can clone the Arc (pointer copy) rather
+            // than the full key material on every spawn_blocking call.
+            let signing_key = std::sync::Arc::new(rsa::pss::SigningKey::<sha2::Sha256>::new(key));
             Ok((
-                LocalKey::RsaPss2048(key),
+                LocalKey::RsaPss2048(signing_key),
                 SigningAlgorithm::RsaPss2048Sha256,
             ))
         }
-        other => Err(SecretError::InvalidUri(format!(
-            "unknown algorithm `{other}`; supported: ed25519, p256, rsa-pss-2048"
-        ))),
+        // validate_algorithm() already rejected every other value before
+        // parse_key() is called, so this arm is unreachable.
+        other => unreachable!("algorithm `{other}` was already rejected by validate_algorithm"),
     }
 }
 
@@ -174,12 +183,25 @@ impl SigningBackend for LocalSigningBackend {
                 let sig: p256::ecdsa::Signature = key.sign(message);
                 Ok(sig.to_bytes().to_vec())
             }
-            LocalKey::RsaPss2048(key) => {
-                // rsa::pss::SigningKey<Sha256> implements signature::Signer when
-                // the `getrandom` feature is enabled (uses OsRng internally).
-                let signing_key = rsa::pss::SigningKey::<sha2::Sha256>::new(key.clone());
-                let sig: rsa::pss::Signature = signing_key.sign(message);
-                Ok(sig.to_bytes().to_vec())
+            LocalKey::RsaPss2048(signing_key) => {
+                // RSA-2048 PSS signing takes ~1-3 ms of CPU.  Running it on
+                // the tokio executor thread would block all other tasks for
+                // that duration, so it is offloaded to a blocking thread pool
+                // via spawn_blocking.  Ed25519 and P-256 are fast (~10 µs)
+                // and do not need this treatment.
+                // Cloning the Arc is a pointer copy — the RSA key material is
+                // not duplicated.
+                let key_clone = std::sync::Arc::clone(signing_key);
+                let msg = message.to_vec();
+                tokio::task::spawn_blocking(move || -> Vec<u8> {
+                    let sig: rsa::pss::Signature = key_clone.sign(&msg);
+                    sig.to_bytes().to_vec()
+                })
+                .await
+                .map_err(|e| SecretError::Backend {
+                    backend: "local-signing",
+                    source: format!("RSA sign task panicked: {e}").into(),
+                })
             }
         }
     }
@@ -205,9 +227,15 @@ impl SigningBackend for LocalSigningBackend {
                         source: format!("P-256 public key encode error: {e}").into(),
                     })
             }
-            LocalKey::RsaPss2048(key) => {
+            LocalKey::RsaPss2048(signing_key) => {
                 use rsa::pkcs8::EncodePublicKey as RsaEncodePublicKey;
-                let pub_key = rsa::RsaPublicKey::from(key);
+                // Deref through Arc → &SigningKey; then SigningKey::as_ref()
+                // → &RsaPrivateKey; RsaPublicKey implements From<&RsaPrivateKey>.
+                // The explicit UFCS is required to disambiguate from the
+                // blanket AsRef<Self> impl.
+                let sk: &rsa::pss::SigningKey<sha2::Sha256> = signing_key;
+                let priv_key = <rsa::pss::SigningKey<_> as AsRef<rsa::RsaPrivateKey>>::as_ref(sk);
+                let pub_key = rsa::RsaPublicKey::from(priv_key);
                 pub_key
                     .to_public_key_der()
                     .map(|d| d.to_vec())
@@ -219,10 +247,18 @@ impl SigningBackend for LocalSigningBackend {
         }
     }
 
-    fn algorithm(&self) -> SigningAlgorithm {
-        self.algorithm
+    fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
+        Ok(self.algorithm)
     }
 }
+
+inventory::submit!(secretx_core::SigningBackendRegistration {
+    name: "local-signing",
+    factory: |uri: &str| {
+        LocalSigningBackend::from_uri(uri)
+            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
+    },
+});
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -237,13 +273,38 @@ mod tests {
     const RSA_KEY: &str = "/tmp/secretx-test-keys/rsa.der";
 
     fn ed25519_uri() -> String {
-        format!("secretx://local-signing/{ED25519_KEY}?algorithm=ed25519")
+        format!("secretx:local-signing:{ED25519_KEY}?algorithm=ed25519")
     }
     fn p256_uri() -> String {
-        format!("secretx://local-signing/{P256_KEY}?algorithm=p256")
+        format!("secretx:local-signing:{P256_KEY}?algorithm=p256")
     }
     fn rsa_uri() -> String {
-        format!("secretx://local-signing/{RSA_KEY}?algorithm=rsa-pss-2048")
+        format!("secretx:local-signing:{RSA_KEY}?algorithm=rsa-pss-2048")
+    }
+
+    /// Load a backend from a URI, skipping the test (returning early) if the
+    /// key file is absent.  Panics on any other error so real failures are not
+    /// silently swallowed.
+    ///
+    /// Generate test keys once with:
+    /// ```text
+    /// mkdir -p /tmp/secretx-test-keys
+    /// openssl genpkey -algorithm ed25519 -outform DER \
+    ///     -out /tmp/secretx-test-keys/ed25519.der
+    /// openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+    ///     -outform DER -out /tmp/secretx-test-keys/p256.der
+    /// openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+    ///     -outform DER -out /tmp/secretx-test-keys/rsa.der
+    /// ```
+    /// Without those files the integration tests skip cleanly.
+    macro_rules! load_or_skip {
+        ($uri:expr) => {
+            match LocalSigningBackend::from_uri(&$uri) {
+                Ok(b) => b,
+                Err(SecretError::NotFound) => return, // key files absent; skip
+                Err(e) => panic!("from_uri failed unexpectedly: {e}"),
+            }
+        };
     }
 
     // ── from_uri parsing ──────────────────────────────────────────────────────
@@ -251,7 +312,7 @@ mod tests {
     #[test]
     fn from_uri_wrong_backend() {
         assert!(matches!(
-            LocalSigningBackend::from_uri("secretx://file//tmp/key.der?algorithm=ed25519"),
+            LocalSigningBackend::from_uri("secretx:file:/tmp/key.der?algorithm=ed25519"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -259,7 +320,7 @@ mod tests {
     #[test]
     fn from_uri_missing_path() {
         assert!(matches!(
-            LocalSigningBackend::from_uri("secretx://local-signing?algorithm=ed25519"),
+            LocalSigningBackend::from_uri("secretx:local-signing?algorithm=ed25519"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -267,7 +328,7 @@ mod tests {
     #[test]
     fn from_uri_missing_algorithm_param() {
         assert!(matches!(
-            LocalSigningBackend::from_uri("secretx://local-signing//tmp/key.der"),
+            LocalSigningBackend::from_uri("secretx:local-signing:/tmp/key.der"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -276,18 +337,34 @@ mod tests {
     fn from_uri_unknown_algorithm() {
         // Key file doesn't need to exist for algorithm rejection.
         assert!(matches!(
-            LocalSigningBackend::from_uri("secretx://local-signing//tmp/key.der?algorithm=elgamal"),
+            LocalSigningBackend::from_uri("secretx:local-signing:/tmp/key.der?algorithm=elgamal"),
             Err(SecretError::InvalidUri(_))
         ));
+    }
+
+    // A valid URI pointing to a non-existent file must return NotFound, not
+    // Backend, so callers using NotFound to trigger a fallback path see the
+    // right error variant.
+    #[test]
+    fn from_uri_nonexistent_file_returns_not_found() {
+        let result = LocalSigningBackend::from_uri(
+            "secretx:local-signing:/nonexistent/path/that/will/never/exist.der?algorithm=ed25519",
+        );
+        assert!(
+            matches!(result, Err(SecretError::NotFound)),
+            "missing key file must return NotFound"
+        );
     }
 
     // ── Ed25519 ───────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn ed25519_loads_and_signs() {
-        let backend =
-            LocalSigningBackend::from_uri(&ed25519_uri()).expect("ed25519 from_uri failed");
-        assert_eq!(backend.algorithm(), SigningAlgorithm::Ed25519);
+        let backend = load_or_skip!(ed25519_uri());
+        assert_eq!(
+            backend.algorithm().expect("algorithm"),
+            SigningAlgorithm::Ed25519
+        );
 
         let message = b"hello, ed25519";
         let sig_bytes = backend.sign(message).await.expect("sign failed");
@@ -315,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn ed25519_different_messages_differ() {
-        let backend = LocalSigningBackend::from_uri(&ed25519_uri()).unwrap();
+        let backend = load_or_skip!(ed25519_uri());
         let s1 = backend.sign(b"message one").await.unwrap();
         let s2 = backend.sign(b"message two").await.unwrap();
         assert_ne!(s1, s2);
@@ -325,8 +402,11 @@ mod tests {
 
     #[tokio::test]
     async fn p256_loads_and_signs() {
-        let backend = LocalSigningBackend::from_uri(&p256_uri()).expect("p256 from_uri failed");
-        assert_eq!(backend.algorithm(), SigningAlgorithm::EcdsaP256Sha256);
+        let backend = load_or_skip!(p256_uri());
+        assert_eq!(
+            backend.algorithm().expect("algorithm"),
+            SigningAlgorithm::EcdsaP256Sha256
+        );
 
         let message = b"hello, p256";
         let sig_bytes = backend.sign(message).await.expect("sign failed");
@@ -351,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn p256_different_messages_differ() {
-        let backend = LocalSigningBackend::from_uri(&p256_uri()).unwrap();
+        let backend = load_or_skip!(p256_uri());
         let s1 = backend.sign(b"message one").await.unwrap();
         let s2 = backend.sign(b"message two").await.unwrap();
         assert_ne!(s1, s2);
@@ -361,8 +441,11 @@ mod tests {
 
     #[tokio::test]
     async fn rsa_pss_loads_and_signs() {
-        let backend = LocalSigningBackend::from_uri(&rsa_uri()).expect("rsa from_uri failed");
-        assert_eq!(backend.algorithm(), SigningAlgorithm::RsaPss2048Sha256);
+        let backend = load_or_skip!(rsa_uri());
+        assert_eq!(
+            backend.algorithm().expect("algorithm"),
+            SigningAlgorithm::RsaPss2048Sha256
+        );
 
         let message = b"hello, rsa-pss";
         let sig_bytes = backend.sign(message).await.expect("sign failed");
@@ -393,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn rsa_pss_different_messages_differ() {
-        let backend = LocalSigningBackend::from_uri(&rsa_uri()).unwrap();
+        let backend = load_or_skip!(rsa_uri());
         let s1 = backend.sign(b"message one").await.unwrap();
         let s2 = backend.sign(b"message two").await.unwrap();
         assert_ne!(s1, s2);
@@ -402,7 +485,7 @@ mod tests {
     // RSA-PSS is randomized so two signatures of the same message differ.
     #[tokio::test]
     async fn rsa_pss_same_message_randomized() {
-        let backend = LocalSigningBackend::from_uri(&rsa_uri()).unwrap();
+        let backend = load_or_skip!(rsa_uri());
         let s1 = backend.sign(b"same message").await.unwrap();
         let s2 = backend.sign(b"same message").await.unwrap();
         // PSS is probabilistic — signatures should differ with overwhelming probability.
@@ -413,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn ed25519_public_key_der_stable() {
-        let b = LocalSigningBackend::from_uri(&ed25519_uri()).unwrap();
+        let b = load_or_skip!(ed25519_uri());
         let d1 = b.public_key_der().await.unwrap();
         let d2 = b.public_key_der().await.unwrap();
         assert_eq!(d1, d2);

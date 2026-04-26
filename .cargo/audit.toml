@@ -1,0 +1,32 @@
+# cargo-audit configuration
+#
+# Advisories acknowledged here are either unfixable (no upstream patch exists)
+# or are transitive through third-party SDKs that we cannot upgrade.
+# Each entry documents the crate path, the reason it is unresolvable, and
+# when it should be re-evaluated.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — rsa: Marvin Attack timing side-channel in RSA ops.
+    # No fixed version of the `rsa` crate exists as of 2026-04.
+    # Affected paths:
+    #   secretx-local-signing (prod): RSA-PSS signing via CKM_RSA_PKCS_PSS.
+    #   secretx-pkcs11, secretx-aws-kms (dev-deps only): test signature
+    #   verification; not in the published crate graph.
+    #   bitwarden-crypto (transitive through bitwarden SDK): upstream dependency.
+    # Re-evaluate when the rsa crate publishes a patched release.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2026-0099 — rustls-webpki: wildcard name constraint bypass.
+    # RUSTSEC-2026-0104 — rustls-webpki: panic in CRL parsing.
+    # RUSTSEC-2026-0098 — rustls-webpki: URI name constraint bypass.
+    # All three affect rustls-webpki 0.101.7, which is pinned by
+    # rustls 0.21.12 → hyper-rustls 0.24.2 → aws-smithy-http-client 1.1.12
+    # (the AWS SDK for Rust v1 TLS stack). The fixes require rustls-webpki
+    # 0.103.12+ which in turn requires rustls 0.22+; the AWS SDK has not yet
+    # migrated. No workaround is available on our side.
+    # Re-evaluate when aws-smithy-http-client moves to hyper-rustls 0.25+.
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+    "RUSTSEC-2026-0098",
+]

@@ -2,7 +2,7 @@
 //!
 //! [`CachingStore`] wraps any backend that implements [`SecretStore`] and adds
 //! a simple TTL-based memory cache. Cache entries are stored as
-//! [`Zeroizing`](zeroize::Zeroizing) buffers so secret bytes are zeroed on
+//! [`Zeroizing`] buffers so secret bytes are zeroed on
 //! eviction. Setting `ttl` to [`Duration::ZERO`] disables caching entirely,
 //! which is appropriate for file and env backends.
 //!
@@ -11,9 +11,21 @@
 //! The internal [`tokio::sync::Mutex`] is **never held across an `.await`
 //! point**. All cache reads and writes acquire the lock, copy the data they
 //! need, then drop the lock before any network call.
+//!
+//! # Known limitation: thundering herd on TTL expiry
+//!
+//! When multiple async tasks share a `CachingStore` and a cached entry
+//! expires, all tasks that call [`get`](SecretStore::get) concurrently will
+//! each independently detect the miss, each call the inner backend, and each
+//! write the result back.  For backends with API rate limits (AWS Secrets
+//! Manager, AWS SSM Parameter Store) this can cause a brief burst of calls.
+//!
+//! **Mitigation**: choose a TTL long enough that simultaneous expiry is
+//! unlikely in your workload (the default for network backends is 5 minutes).
+//! In single-task applications the herd size is always 1 and this does not
+//! arise.
 
-use secretx_core::{SecretError, SecretStore, SecretValue};
-use std::collections::HashMap;
+use secretx_core::{SecretError, SecretStore, SecretValue, WritableSecretStore};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
@@ -23,14 +35,18 @@ struct CachedEntry {
     fetched_at: Instant,
 }
 
-/// A [`SecretStore`] wrapper that caches secret values in memory with a TTL.
+/// A [`SecretStore`] wrapper that caches the secret value in memory with a TTL.
 ///
 /// Construct with [`CachingStore::new`], passing the inner backend wrapped in
 /// an [`Arc`] and the desired TTL. Use [`Duration::ZERO`] to disable caching.
+///
+/// Each `CachingStore` instance caches exactly one value — the secret
+/// identified by the URI passed to the inner backend's `from_uri`. TTL
+/// expiry triggers a fresh fetch from the backend on the next `get` call.
 pub struct CachingStore<S: SecretStore> {
     inner: Arc<S>,
     ttl: Duration,
-    cache: Arc<tokio::sync::Mutex<HashMap<String, CachedEntry>>>,
+    cache: Arc<tokio::sync::Mutex<Option<CachedEntry>>>,
 }
 
 impl<S: SecretStore> CachingStore<S> {
@@ -42,93 +58,85 @@ impl<S: SecretStore> CachingStore<S> {
         Self {
             inner,
             ttl,
-            cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            cache: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl<S: SecretStore> SecretStore for CachingStore<S> {
-    async fn get(&self, name: &str) -> Result<SecretValue, SecretError> {
+    async fn get(&self) -> Result<SecretValue, SecretError> {
         if self.ttl == Duration::ZERO {
-            return self.inner.get(name).await;
+            return self.inner.get().await;
         }
 
-        // Check cache — copy bytes out before dropping the lock.
+        // Check cache. The block scope releases the lock before the fetch below.
         {
             let cache = self.cache.lock().await;
-            if let Some(entry) = cache.get(name) {
+            if let Some(entry) = cache.as_ref() {
                 if entry.fetched_at.elapsed() < self.ttl {
-                    let bytes = entry.bytes.to_vec();
-                    drop(cache);
-                    return Ok(SecretValue::new(bytes));
+                    return Ok(SecretValue::new(entry.bytes.to_vec()));
                 }
             }
-        } // lock dropped here
+        }
 
         // Cache miss or expired — fetch from inner backend.
-        let value = self.inner.get(name).await?;
+        let value = self.inner.get().await?;
 
         // Copy bytes for the cache entry before moving value into return position.
         let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
-
         {
             let mut cache = self.cache.lock().await;
-            cache.insert(
-                name.to_string(),
-                CachedEntry {
-                    bytes: cached_bytes,
-                    fetched_at: Instant::now(),
-                },
-            );
-        } // lock dropped here
+            *cache = Some(CachedEntry {
+                bytes: cached_bytes,
+                fetched_at: Instant::now(),
+            });
+        }
 
         Ok(value)
     }
 
-    async fn put(&self, name: &str, value: SecretValue) -> Result<(), SecretError> {
-        // Copy bytes before consuming value (SecretValue has no Clone).
-        let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
-
-        self.inner.put(name, value).await?;
-
-        if self.ttl != Duration::ZERO {
-            let mut cache = self.cache.lock().await;
-            cache.insert(
-                name.to_string(),
-                CachedEntry {
-                    bytes: cached_bytes,
-                    fetched_at: Instant::now(),
-                },
-            );
-        } // lock dropped here
-
-        Ok(())
-    }
-
-    async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError> {
-        let value = self.inner.refresh(name).await?;
+    async fn refresh(&self) -> Result<SecretValue, SecretError> {
+        let value = self.inner.refresh().await?;
 
         if self.ttl != Duration::ZERO {
             let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
             let mut cache = self.cache.lock().await;
-            cache.insert(
-                name.to_string(),
-                CachedEntry {
-                    bytes: cached_bytes,
-                    fetched_at: Instant::now(),
-                },
-            );
-        } // lock dropped here
+            *cache = Some(CachedEntry {
+                bytes: cached_bytes,
+                fetched_at: Instant::now(),
+            });
+        }
 
         Ok(value)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: WritableSecretStore> WritableSecretStore for CachingStore<S> {
+    async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
+        // Copy bytes before consuming value (SecretValue has no Clone).
+        let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
+
+        // Write through to inner first; only update cache on success.
+        self.inner.put(value).await?;
+
+        if self.ttl != Duration::ZERO {
+            let mut cache = self.cache.lock().await;
+            *cache = Some(CachedEntry {
+                bytes: cached_bytes,
+                fetched_at: Instant::now(),
+            });
+        }
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secretx_core::{SecretError, SecretStore, SecretValue};
+    use secretx_core::{SecretError, SecretStore, SecretValue, WritableSecretStore};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -141,17 +149,20 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SecretStore for FakeStore {
-        async fn get(&self, _name: &str) -> Result<SecretValue, SecretError> {
+        async fn get(&self) -> Result<SecretValue, SecretError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             Ok(SecretValue::new(self.value.to_vec()))
         }
 
-        async fn put(&self, _name: &str, _value: SecretValue) -> Result<(), SecretError> {
-            Ok(())
+        async fn refresh(&self) -> Result<SecretValue, SecretError> {
+            self.get().await
         }
+    }
 
-        async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError> {
-            self.get(name).await
+    #[async_trait::async_trait]
+    impl WritableSecretStore for FakeStore {
+        async fn put(&self, _value: SecretValue) -> Result<(), SecretError> {
+            Ok(())
         }
     }
 
@@ -164,10 +175,10 @@ mod tests {
         };
         let store = CachingStore::new(Arc::new(fake), Duration::from_secs(60));
 
-        let v1 = store.get("key").await.unwrap();
+        let v1 = store.get().await.unwrap();
         assert_eq!(v1.as_bytes(), b"s3cr3t");
 
-        let v2 = store.get("key").await.unwrap();
+        let v2 = store.get().await.unwrap();
         assert_eq!(v2.as_bytes(), b"s3cr3t");
 
         // Inner should have been called exactly once.
@@ -183,8 +194,8 @@ mod tests {
         };
         let store = CachingStore::new(Arc::new(fake), Duration::ZERO);
 
-        store.get("key").await.unwrap();
-        store.get("key").await.unwrap();
+        store.get().await.unwrap();
+        store.get().await.unwrap();
 
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
@@ -199,12 +210,12 @@ mod tests {
         let store = CachingStore::new(Arc::new(fake), Duration::from_secs(60));
 
         store
-            .put("key", SecretValue::new(b"from-put".to_vec()))
+            .put(SecretValue::new(b"from-put".to_vec()))
             .await
             .unwrap();
 
         // get should be served from cache — inner never called.
-        let v = store.get("key").await.unwrap();
+        let v = store.get().await.unwrap();
         assert_eq!(v.as_bytes(), b"from-put");
         assert_eq!(call_count.load(Ordering::SeqCst), 0);
     }
@@ -218,11 +229,11 @@ mod tests {
         };
         let store = CachingStore::new(Arc::new(fake), Duration::from_secs(60));
 
-        let v = store.refresh("key").await.unwrap();
+        let v = store.refresh().await.unwrap();
         assert_eq!(v.as_bytes(), b"refreshed");
 
         // Subsequent get should be served from cache (only 1 inner call total).
-        let v2 = store.get("key").await.unwrap();
+        let v2 = store.get().await.unwrap();
         assert_eq!(v2.as_bytes(), b"refreshed");
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }

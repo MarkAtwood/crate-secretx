@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "PKCS#11 HSM backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
@@ -14,7 +15,12 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
 cryptoki = { workspace = true }
+inventory = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
+sha2 = { workspace = true }

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "HashiCorp Vault backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
@@ -13,9 +14,10 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 [dependencies]
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
+inventory = { workspace = true }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
-vaultrs = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true }

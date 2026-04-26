@@ -8,33 +8,60 @@
 //! `SECRETX_AZURE_SECRET` env vars to enable them.
 //! **Not yet integration-tested.**
 //!
-//! URI: `secretx://azure-kv/<vault-name>/<secret-name>[?field=<json_field>]`
+//! URI: `secretx:azure-kv:<vault-name>/<secret-name>[?field=<json_field>&credential=<mode>]`
 //!
 //! - `vault-name` is the Azure Key Vault name (the subdomain part before `.vault.azure.net`)
 //! - `secret-name` is the name of the secret stored in the vault
-//!
-//! Authentication uses a chain: managed identity first (for Azure-hosted workloads),
-//! then Azure CLI / Azure Developer CLI (for developer workstations and CI).
+//! - `credential` controls which Azure credential is used:
+//!   - `managed-identity` — use only managed identity; recommended in production to
+//!     prevent silent fallback to developer credentials on transient MI failures
+//!   - `developer` — use only Azure CLI / Azure Developer CLI; for local development
+//!   - `chained` or absent (default) — try managed identity first, then developer tools
 //!
 //! ```rust,no_run
 //! # async fn example() -> Result<(), secretx_core::SecretError> {
 //! use secretx_azure_kv::AzureKvBackend;
 //! use secretx_core::SecretStore;
 //!
-//! let store = AzureKvBackend::from_uri("secretx://azure-kv/my-vault/my-secret")?;
-//! let value = store.get("my-secret").await?;
+//! let store = AzureKvBackend::from_uri("secretx:azure-kv:my-vault/my-secret")?;
+//! let value = store.get().await?;
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Zeroization
+//!
+//! The Azure SDK deserializes the HTTP response internally and returns the secret as a plain
+//! `String` (`secret.value`).  That `String` is in non-Zeroizing heap memory before our code
+//! sees it — there is no way to zero it from outside the SDK.  Because the secret is already
+//! leaked at the SDK layer, using `serde_json` for `?field=` extraction adds no additional
+//! unzeroed copies.  Only the final `SecretValue` returned to the caller is zeroed on drop.
+//!
+//! In `put`, the secret bytes are decoded to a plain `String` before being passed to
+//! `SetSecretParameters`. That intermediate `String` is moved into the Azure SDK struct and is
+//! not zeroed on drop; the Azure SDK does not use `Zeroizing` for its fields. This is an SDK
+//! limitation. The `SecretValue` passed to `put` is zeroed on drop as usual.
 
 use std::sync::Arc;
 
 use azure_core::{credentials::TokenCredential, error::ErrorKind};
 use azure_identity::{DeveloperToolsCredential, ManagedIdentityCredential};
 use azure_security_keyvault_secrets::{models::SetSecretParameters, SecretClient};
-use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
+use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 
 const BACKEND: &str = "azure-kv";
+
+/// Which Azure credential to use for authenticating to Key Vault.
+#[derive(Clone, Copy)]
+enum CredentialMode {
+    /// Managed identity only. Recommended for production to prevent silent fallback
+    /// to developer credentials on transient managed-identity failures.
+    ManagedIdentity,
+    /// Developer tools (Azure CLI / Azure Developer CLI) only. For local development.
+    Developer,
+    /// Try managed identity first; fall back to developer tools. The default.
+    Chained,
+}
 
 /// Backend that reads and writes secrets in Azure Key Vault.
 ///
@@ -50,30 +77,53 @@ pub struct AzureKvBackend {
 }
 
 impl AzureKvBackend {
-    /// Construct from a `secretx://azure-kv/<vault-name>/<secret-name>[?field=<json_field>]` URI.
+    /// Construct from a `secretx:azure-kv:<vault-name>/<secret-name>[?field=<json_field>]` URI.
     ///
     /// Builds the Azure Key Vault client synchronously. Credential discovery
     /// is deferred to the first actual network call.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend != BACKEND {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
-                parsed.backend
+                parsed.backend()
             )));
         }
 
         // URI path is "<vault-name>/<secret-name>".
-        let (vault_name, secret_name) = split_path(&parsed.path).ok_or_else(|| {
-            SecretError::InvalidUri(
-                "azure-kv URI requires vault name and secret name: \
-                 secretx://azure-kv/<vault-name>/<secret-name>"
-                    .into(),
-            )
+        let (vault_name, secret_name) = split_path(parsed.path()).ok_or_else(|| {
+            // Distinguish the slash-in-secret case: Azure KV secret names
+            // cannot contain '/', so give an actionable message rather than
+            // just "requires vault name and secret name".
+            if parsed.path().bytes().filter(|&b| b == b'/').count() > 1 {
+                SecretError::InvalidUri(
+                    "azure-kv secret name must not contain '/': Azure Key Vault \
+                     does not support nested secret names; \
+                     use secretx:azure-kv:<vault-name>/<secret-name>"
+                        .into(),
+                )
+            } else {
+                SecretError::InvalidUri(
+                    "azure-kv URI requires vault name and secret name: \
+                     secretx:azure-kv:<vault-name>/<secret-name>"
+                        .into(),
+                )
+            }
         })?;
 
         let field = parsed.param("field").map(str::to_owned);
-        let client = build_client(&vault_name)?;
+        let credential_mode = match parsed.param("credential") {
+            None | Some("chained") => CredentialMode::Chained,
+            Some("managed-identity") => CredentialMode::ManagedIdentity,
+            Some("developer") => CredentialMode::Developer,
+            Some(other) => {
+                return Err(SecretError::InvalidUri(format!(
+                    "unknown credential mode `{other}`; \
+                     supported: managed-identity, developer, chained (default)"
+                )))
+            }
+        };
+        let client = build_client(&vault_name, credential_mode)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -85,24 +135,23 @@ impl AzureKvBackend {
 
 /// Split `"<vault-name>/<secret-name>"` into `(vault_name, secret_name)`.
 ///
-/// Returns `None` if either component is empty.
+/// Returns `None` if either component is empty or if `secret-name` contains `/`
+/// (Azure Key Vault secret names may not contain slashes).
 fn split_path(path: &str) -> Option<(String, String)> {
     let slash = path.find('/')?;
     let vault = &path[..slash];
     let secret = &path[slash + 1..];
-    if vault.is_empty() || secret.is_empty() {
+    if vault.is_empty() || secret.is_empty() || secret.contains('/') {
         return None;
     }
     Some((vault.to_string(), secret.to_string()))
 }
 
-/// Build an Azure Key Vault `SecretClient` using a credential chain.
+/// Build an Azure Key Vault `SecretClient` using the specified credential mode.
 ///
-/// Tries managed identity first (succeeds on Azure-hosted workloads), then
-/// developer tools credentials (Azure CLI / Azure Developer CLI) for local
-/// development. `SecretClient::new` is synchronous so no runtime is needed.
-fn build_client(vault_name: &str) -> Result<SecretClient, SecretError> {
-    let credential: Arc<dyn TokenCredential> = build_credential()?;
+/// `SecretClient::new` is synchronous so no runtime is needed.
+fn build_client(vault_name: &str, mode: CredentialMode) -> Result<SecretClient, SecretError> {
+    let credential: Arc<dyn TokenCredential> = build_credential(mode)?;
     let vault_url = format!("https://{vault_name}.vault.azure.net");
     SecretClient::new(&vault_url, credential, None).map_err(|e| SecretError::Backend {
         backend: BACKEND,
@@ -110,33 +159,37 @@ fn build_client(vault_name: &str) -> Result<SecretClient, SecretError> {
     })
 }
 
-/// Build a chained credential: managed identity → developer tools.
-///
-/// Both credential types are constructed synchronously; actual token fetches
-/// are deferred until the first network call.
-fn build_credential() -> Result<Arc<dyn TokenCredential>, SecretError> {
-    // Prefer managed identity (IMDS) on Azure-hosted workloads.
-    // If that succeeds, it will be the active credential at token-fetch time.
-    // On a developer workstation IMDS is unreachable, so managed identity will
-    // simply fail at get_token() time and the SDK does NOT automatically
-    // fall back — so we build a manual chain here.
-    //
-    // The chain: ManagedIdentityCredential → DeveloperToolsCredential.
-    // We wrap both in a simple Arc<ChainedCredential> that tries each in order.
-
-    let mi = ManagedIdentityCredential::new(None).map_err(|e| SecretError::Backend {
-        backend: BACKEND,
-        source: e.into(),
-    })?;
-
-    let dt = DeveloperToolsCredential::new(None).map_err(|e| SecretError::Backend {
-        backend: BACKEND,
-        source: e.into(),
-    })?;
-
-    Ok(Arc::new(ChainedCredential {
-        sources: vec![mi, dt],
-    }))
+/// Build an Azure credential according to `mode`.
+fn build_credential(mode: CredentialMode) -> Result<Arc<dyn TokenCredential>, SecretError> {
+    match mode {
+        CredentialMode::ManagedIdentity => {
+            let mi = ManagedIdentityCredential::new(None).map_err(|e| SecretError::Backend {
+                backend: BACKEND,
+                source: e.into(),
+            })?;
+            Ok(mi as Arc<dyn TokenCredential>)
+        }
+        CredentialMode::Developer => {
+            let dt = DeveloperToolsCredential::new(None).map_err(|e| SecretError::Backend {
+                backend: BACKEND,
+                source: e.into(),
+            })?;
+            Ok(dt as Arc<dyn TokenCredential>)
+        }
+        CredentialMode::Chained => {
+            let mi = ManagedIdentityCredential::new(None).map_err(|e| SecretError::Backend {
+                backend: BACKEND,
+                source: e.into(),
+            })?;
+            let dt = DeveloperToolsCredential::new(None).map_err(|e| SecretError::Backend {
+                backend: BACKEND,
+                source: e.into(),
+            })?;
+            Ok(Arc::new(ChainedCredential {
+                sources: vec![mi, dt],
+            }))
+        }
+    }
 }
 
 /// A simple credential chain that tries each source in order, stopping at the
@@ -182,6 +235,18 @@ fn is_not_found(e: &azure_core::Error) -> bool {
     )
 }
 
+/// Returns true for errors that are likely transient (network I/O, server-side 5xx, 429).
+/// Callers should use `Unavailable` for these; `Backend` for permanent errors.
+fn is_transient(e: &azure_core::Error) -> bool {
+    matches!(e.kind(), ErrorKind::Io)
+        || matches!(
+            e.kind(),
+            ErrorKind::HttpResponse { status, .. }
+            if status.is_server_error()
+                || *status == azure_core::http::StatusCode::TooManyRequests
+        )
+}
+
 /// Fetch the current value of a secret from Key Vault.
 async fn fetch(
     client: &SecretClient,
@@ -191,6 +256,11 @@ async fn fetch(
     let resp = client.get_secret(secret_name, None).await.map_err(|e| {
         if is_not_found(&e) {
             SecretError::NotFound
+        } else if is_transient(&e) {
+            SecretError::Unavailable {
+                backend: BACKEND,
+                source: e.into(),
+            }
         } else {
             SecretError::Backend {
                 backend: BACKEND,
@@ -205,21 +275,47 @@ async fn fetch(
     })?;
 
     let raw = secret.value.ok_or(SecretError::NotFound)?;
-    let value = SecretValue::new(raw.into_bytes());
 
     match field {
-        Some(f) => value.extract_field(f),
-        None => Ok(value),
+        Some(f) => {
+            let json: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+                SecretError::DecodeFailed(format!(
+                    "azure-kv: ?field= requires a JSON string secret: {e}"
+                ))
+            })?;
+            let val = json.get(f).and_then(|v| v.as_str()).ok_or_else(|| {
+                SecretError::DecodeFailed(format!(
+                    "azure-kv: field '{f}' not found or not a string"
+                ))
+            })?;
+            Ok(SecretValue::new(val.as_bytes().to_vec()))
+        }
+        None => Ok(SecretValue::new(raw.into_bytes())),
     }
 }
 
 #[async_trait::async_trait]
 impl SecretStore for AzureKvBackend {
-    async fn get(&self, _name: &str) -> Result<SecretValue, SecretError> {
+    async fn get(&self) -> Result<SecretValue, SecretError> {
         fetch(&self.client, &self.secret_name, self.field.as_deref()).await
     }
 
-    async fn put(&self, _name: &str, value: SecretValue) -> Result<(), SecretError> {
+    async fn refresh(&self) -> Result<SecretValue, SecretError> {
+        self.get().await
+    }
+}
+
+#[async_trait::async_trait]
+impl WritableSecretStore for AzureKvBackend {
+    async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
+        if self.field.is_some() {
+            return Err(SecretError::InvalidUri(
+                "put() requires a URI without a field selector (?field=); \
+                 to update the whole secret omit ?field=, or implement read-modify-write \
+                 at the call site"
+                    .into(),
+            ));
+        }
         let raw = std::str::from_utf8(value.as_bytes())
             .map(str::to_owned)
             .map_err(|_| {
@@ -247,6 +343,11 @@ impl SecretStore for AzureKvBackend {
             .map_err(|e| {
                 if is_not_found(&e) {
                     SecretError::NotFound
+                } else if is_transient(&e) {
+                    SecretError::Unavailable {
+                        backend: BACKEND,
+                        source: e.into(),
+                    }
                 } else {
                     SecretError::Backend {
                         backend: BACKEND,
@@ -257,11 +358,24 @@ impl SecretStore for AzureKvBackend {
 
         Ok(())
     }
-
-    async fn refresh(&self, name: &str) -> Result<SecretValue, SecretError> {
-        self.get(name).await
-    }
 }
+
+inventory::submit!(secretx_core::BackendRegistration {
+    name: "azure-kv",
+    factory: |uri: &str| {
+        AzureKvBackend::from_uri(uri)
+            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    },
+});
+
+inventory::submit!(secretx_core::WritableBackendRegistration {
+    name: "azure-kv",
+    factory: |uri: &str| {
+        AzureKvBackend::from_uri(uri).map(|b| {
+            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
+        })
+    },
+});
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -272,9 +386,17 @@ mod tests {
     // URI parsing tests — no Azure connection required.
 
     #[test]
+    fn from_uri_unknown_credential_mode() {
+        assert!(matches!(
+            AzureKvBackend::from_uri("secretx:azure-kv:my-vault/my-secret?credential=saml"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
     fn from_uri_wrong_backend() {
         assert!(matches!(
-            AzureKvBackend::from_uri("secretx://env/FOO"),
+            AzureKvBackend::from_uri("secretx:env:FOO"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -290,7 +412,7 @@ mod tests {
     #[test]
     fn from_uri_missing_secret_name() {
         assert!(matches!(
-            AzureKvBackend::from_uri("secretx://azure-kv/my-vault"),
+            AzureKvBackend::from_uri("secretx:azure-kv:my-vault"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -298,7 +420,7 @@ mod tests {
     #[test]
     fn from_uri_empty_vault_name() {
         assert!(matches!(
-            AzureKvBackend::from_uri("secretx://azure-kv//my-secret"),
+            AzureKvBackend::from_uri("secretx:azure-kv:/my-secret"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -311,16 +433,27 @@ mod tests {
     }
 
     #[test]
-    fn split_path_nested_secret() {
-        // Secret names may not contain '/' in Azure KV, but the URI parser
-        // may present path components separated by '/'. We take only the
-        // first segment as vault name and the rest as secret name, so a
-        // secret name like "prod/my-secret" becomes path="prod/my-secret"
-        // with vault="prod" and secret="my-secret" — this is the intended
-        // URI design.
-        let (vault, secret) = split_path("my-vault/nested/path").unwrap();
-        assert_eq!(vault, "my-vault");
-        assert_eq!(secret, "nested/path");
+    fn split_path_nested_secret_rejected() {
+        // Azure Key Vault secret names may not contain '/'. A URI like
+        // secretx:azure-kv:my-vault/nested/path is ambiguous and would
+        // produce a confusing Azure API error. Reject it at parse time so
+        // callers get InvalidUri instead.
+        assert!(split_path("my-vault/nested/path").is_none());
+    }
+
+    #[test]
+    fn from_uri_slash_in_secret_name_gives_actionable_error() {
+        let result = AzureKvBackend::from_uri("secretx:azure-kv:my-vault/nested/path");
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "expected InvalidUri"
+        );
+        if let Err(SecretError::InvalidUri(msg)) = result {
+            assert!(
+                msg.contains("must not contain '/'"),
+                "error message should explain the slash constraint, got: {msg}"
+            );
+        }
     }
 
     #[test]
@@ -338,6 +471,19 @@ mod tests {
         assert!(split_path("my-vault/").is_none());
     }
 
+    // put() field-selector guard — no Azure connection needed.
+    #[tokio::test]
+    async fn put_with_field_selector_returns_invalid_uri() {
+        let store =
+            AzureKvBackend::from_uri("secretx:azure-kv:my-vault/my-secret?field=password").unwrap();
+        let result = store.put(SecretValue::new(b"new-value".to_vec())).await;
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "put with field selector must return InvalidUri (got: {:?})",
+            result.err()
+        );
+    }
+
     // Integration tests — skipped unless SECRETX_AZURE_TEST=1 and Azure env vars are set.
 
     #[tokio::test]
@@ -353,9 +499,9 @@ mod tests {
             Ok(s) => s,
             Err(_) => return,
         };
-        let uri = format!("secretx://azure-kv/{vault}/{secret}");
+        let uri = format!("secretx:azure-kv:{vault}/{secret}");
         let store = AzureKvBackend::from_uri(&uri).unwrap();
-        let value = store.get(&secret).await.unwrap();
+        let value = store.get().await.unwrap();
         assert!(!value.as_bytes().is_empty());
     }
 
@@ -372,9 +518,9 @@ mod tests {
             Ok(s) => s,
             Err(_) => return,
         };
-        let uri = format!("secretx://azure-kv/{vault}/{secret}");
+        let uri = format!("secretx:azure-kv:{vault}/{secret}");
         let store = AzureKvBackend::from_uri(&uri).unwrap();
-        let value = store.refresh(&secret).await.unwrap();
+        let value = store.refresh().await.unwrap();
         assert!(!value.as_bytes().is_empty());
     }
 
@@ -395,9 +541,9 @@ mod tests {
             Ok(f) => f,
             Err(_) => return,
         };
-        let uri = format!("secretx://azure-kv/{vault}/{secret}?field={field}");
+        let uri = format!("secretx:azure-kv:{vault}/{secret}?field={field}");
         let store = AzureKvBackend::from_uri(&uri).unwrap();
-        let value = store.get(&secret).await.unwrap();
+        let value = store.get().await.unwrap();
         assert!(!value.as_bytes().is_empty());
     }
 }

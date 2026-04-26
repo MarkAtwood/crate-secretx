@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "wolfHSM secure element backend for secretx."
+readme = "README.md"
 keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
@@ -13,6 +14,7 @@ repository = "https://github.com/MarkAtwood/crate-secretx"
 [dependencies]
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
+inventory = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true }

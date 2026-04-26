@@ -15,7 +15,7 @@
 //! # URI format
 //!
 //! ```text
-//! secretx://wolfhsm/<label>
+//! secretx:wolfhsm:<label>
 //! ```
 //!
 //! Where `<label>` is the object label stored in wolfHSM NVM.
@@ -30,7 +30,9 @@
 //! Until the native library is linked, all operations return
 //! [`SecretError::Unavailable`].
 
-use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend};
+use secretx_core::{
+    SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend,
+};
 
 // ── Backend ───────────────────────────────────────────────────────────────────
 
@@ -42,21 +44,23 @@ pub struct WolfHsmBackend {
 }
 
 impl WolfHsmBackend {
-    /// Construct from a `secretx://wolfhsm/<label>` URI.
+    /// Construct from a `secretx:wolfhsm:<label>` URI.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend != "wolfhsm" {
+        if parsed.backend() != "wolfhsm" {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `wolfhsm`, got `{}`",
-                parsed.backend
+                parsed.backend()
             )));
         }
-        if parsed.path.is_empty() {
+        if parsed.path().is_empty() {
             return Err(SecretError::InvalidUri(
-                "wolfhsm URI requires a label: secretx://wolfhsm/<label>".into(),
+                "wolfhsm URI requires a label: secretx:wolfhsm:<label>".into(),
             ));
         }
-        Ok(Self { label: parsed.path })
+        Ok(Self {
+            label: parsed.path().to_owned(),
+        })
     }
 }
 
@@ -64,15 +68,11 @@ impl WolfHsmBackend {
 
 #[async_trait::async_trait]
 impl SecretStore for WolfHsmBackend {
-    async fn get(&self, _name: &str) -> Result<SecretValue, SecretError> {
+    async fn get(&self) -> Result<SecretValue, SecretError> {
         Err(unavailable(&self.label))
     }
 
-    async fn put(&self, _name: &str, _value: SecretValue) -> Result<(), SecretError> {
-        Err(unavailable(&self.label))
-    }
-
-    async fn refresh(&self, _name: &str) -> Result<SecretValue, SecretError> {
+    async fn refresh(&self) -> Result<SecretValue, SecretError> {
         Err(unavailable(&self.label))
     }
 }
@@ -89,9 +89,9 @@ impl SigningBackend for WolfHsmBackend {
         Err(unavailable(&self.label))
     }
 
-    fn algorithm(&self) -> SigningAlgorithm {
-        // Actual algorithm determined at runtime from the key type on the device.
-        SigningAlgorithm::Ed25519
+    fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
+        // The native library is not linked; return Unavailable consistent with all other methods.
+        Err(unavailable(&self.label))
     }
 }
 
@@ -106,6 +106,22 @@ fn unavailable(label: &str) -> SecretError {
     }
 }
 
+inventory::submit!(secretx_core::BackendRegistration {
+    name: "wolfhsm",
+    factory: |uri: &str| {
+        WolfHsmBackend::from_uri(uri)
+            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    },
+});
+
+inventory::submit!(secretx_core::SigningBackendRegistration {
+    name: "wolfhsm",
+    factory: |uri: &str| {
+        WolfHsmBackend::from_uri(uri)
+            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
+    },
+});
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -114,14 +130,14 @@ mod tests {
 
     #[test]
     fn from_uri_ok() {
-        let b = WolfHsmBackend::from_uri("secretx://wolfhsm/my-key").unwrap();
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key").unwrap();
         assert_eq!(b.label, "my-key");
     }
 
     #[test]
     fn from_uri_wrong_backend() {
         assert!(matches!(
-            WolfHsmBackend::from_uri("secretx://file/foo"),
+            WolfHsmBackend::from_uri("secretx:file:foo"),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -129,26 +145,44 @@ mod tests {
     #[test]
     fn from_uri_missing_label() {
         assert!(matches!(
-            WolfHsmBackend::from_uri("secretx://wolfhsm"),
+            WolfHsmBackend::from_uri("secretx:wolfhsm"),
             Err(SecretError::InvalidUri(_))
         ));
     }
 
     #[tokio::test]
     async fn get_returns_unavailable() {
-        let b = WolfHsmBackend::from_uri("secretx://wolfhsm/test-key").unwrap();
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
         assert!(matches!(
-            b.get("ignored").await,
-            Err(SecretError::Unavailable { backend: "wolfhsm", .. })
+            b.get().await,
+            Err(SecretError::Unavailable {
+                backend: "wolfhsm",
+                ..
+            })
         ));
     }
 
     #[tokio::test]
     async fn sign_returns_unavailable() {
-        let b = WolfHsmBackend::from_uri("secretx://wolfhsm/test-key").unwrap();
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
         assert!(matches!(
             b.sign(b"data").await,
-            Err(SecretError::Unavailable { backend: "wolfhsm", .. })
+            Err(SecretError::Unavailable {
+                backend: "wolfhsm",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn algorithm_returns_unavailable() {
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
+        assert!(matches!(
+            b.algorithm(),
+            Err(SecretError::Unavailable {
+                backend: "wolfhsm",
+                ..
+            })
         ));
     }
 }

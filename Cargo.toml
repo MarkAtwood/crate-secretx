@@ -21,28 +21,28 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
 authors = ["WolfSSL Inc."]
 
 [workspace.dependencies]
-secretx-core = { path = "secretx-core", version = "0.1.0" }
-secretx-cache = { path = "secretx-cache", version = "0.1.0" }
-secretx-aws-kms = { path = "secretx-aws-kms", version = "0.1.0" }
-secretx-aws-sm = { path = "secretx-aws-sm", version = "0.1.0" }
-secretx-aws-ssm = { path = "secretx-aws-ssm", version = "0.1.0" }
-secretx-azure-kv = { path = "secretx-azure-kv", version = "0.1.0" }
-secretx-bitwarden = { path = "secretx-bitwarden", version = "0.1.0" }
-secretx-doppler = { path = "secretx-doppler", version = "0.1.0" }
-secretx-env = { path = "secretx-env", version = "0.1.0" }
-secretx-file = { path = "secretx-file", version = "0.1.0" }
-secretx-gcp-sm = { path = "secretx-gcp-sm", version = "0.1.0" }
-secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.1.0" }
-secretx-keyring = { path = "secretx-keyring", version = "0.1.0" }
-secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.1.0" }
-secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.1.0" }
+secretx-core = { path = "secretx-core", version = "0.3.0" }
+secretx-cache = { path = "secretx-cache", version = "0.3.0" }
+secretx-aws-kms = { path = "secretx-aws-kms", version = "0.3.0" }
+secretx-aws-sm = { path = "secretx-aws-sm", version = "0.3.0" }
+secretx-aws-ssm = { path = "secretx-aws-ssm", version = "0.3.0" }
+secretx-azure-kv = { path = "secretx-azure-kv", version = "0.3.0" }
+secretx-bitwarden = { path = "secretx-bitwarden", version = "0.3.0" }
+secretx-doppler = { path = "secretx-doppler", version = "0.3.0" }
+secretx-env = { path = "secretx-env", version = "0.3.0" }
+secretx-file = { path = "secretx-file", version = "0.3.0" }
+secretx-gcp-sm = { path = "secretx-gcp-sm", version = "0.3.0" }
+secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.3.0" }
+secretx-keyring = { path = "secretx-keyring", version = "0.3.0" }
+secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.3.0" }
+secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.3.0" }
 async-trait = "0.1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-kms = "1"
@@ -62,10 +62,11 @@ ed25519-dalek = { version = "2", features = ["pkcs8"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 rsa = { version = "0.9", features = ["sha2", "getrandom"] }
-secretx-local-signing = { path = "secretx-local-signing", version = "0.1.0" }
+secretx-local-signing = { path = "secretx-local-signing", version = "0.3.0" }
 serde_json = "1"
 sha2 = "0.10"
 signature = "2"
+inventory = "0.3"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
 zeroize = { version = "1", features = ["alloc"] }

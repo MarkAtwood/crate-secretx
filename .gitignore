@@ -13,3 +13,6 @@ Cargo.lock
 .dolt/
 *.db
 .beads-credential-key
+
+# Internal review / audit tracking logs (not for distribution)
+/audit/
