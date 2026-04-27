@@ -8,6 +8,7 @@ Cargo.lock
 .DS_Store
 .idea/
 *.rs.bk
+*.rlib
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -47,6 +47,23 @@ bd close <id>         # Complete work
 <!-- END BEADS INTEGRATION -->
 
 
+## Non-Interactive Shell Commands
+
+Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode,
+causing an agent to hang indefinitely waiting for confirmation. Always use non-interactive flags:
+
+```bash
+cp -f source dest       # not: cp source dest
+mv -f source dest       # not: mv source dest
+rm -f file              # not: rm file
+rm -rf directory        # not: rm -r directory
+```
+
+Other commands that may prompt:
+- `scp` — use `-o BatchMode=yes`
+- `ssh` — use `-o BatchMode=yes`
+- `apt-get` — use `-y`
+
 ## Build & Test
 
 ```bash

@@ -33,6 +33,19 @@ as one backend option for the rare service that runs inside a user session.
 
 ---
 
+## What this is not
+
+- **Not a secrets manager.** Does not store, encrypt, or audit secrets — that is the backend's job.
+- **Not a key management system.** Does not generate keys or rotate credentials autonomously.
+  Exception: the HSM backends (`aws-kms`, `azure-kv`, `pkcs11`, `wolfhsm`) expose `SigningBackend`
+  for keys that must never leave the hardware.
+- **Not a configuration loader.** Loads secrets (sensitive values that must be zeroed on drop),
+  not config (non-sensitive structured data). Use `config-rs` or `figment` for the rest.
+- **Not async-only.** A sync `get_blocking` adapter wraps `get` for callers that cannot be async.
+- **Not a secrets scanner.** Does not audit code for hardcoded secrets.
+
+---
+
 ## How it works
 
 Backends are selected by URI at runtime. The call site never names a backend.
@@ -41,21 +54,25 @@ Backends are selected by URI at runtime. The call site never names a backend.
 secretx:<backend>:<path>[?options]
 ```
 
-| URI | Backend |
-|-----|---------|
-| `secretx:env:MY_SECRET` | Environment variable |
-| `secretx:file:/etc/secrets/key` | File (absolute path) |
-| `secretx:aws-kms:alias/my-key` | AWS KMS (signing only) |
-| `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager |
-| `secretx:aws-ssm:prod/my-param` | AWS SSM Parameter Store |
-| `secretx:azure-kv:myvault/mysecret` | Azure Key Vault |
-| `secretx:bitwarden:myproject/MY_SECRET` | Bitwarden Secrets Manager |
-| `secretx:doppler:myproject/prd/MY_SECRET` | Doppler |
-| `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager |
-| `secretx:keyring:myapp/my-key` | OS keychain |
-| `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM |
-| `secretx:vault:secret/myapp/key` | HashiCorp Vault |
-| `secretx:wolfhsm:my-key` | wolfHSM secure element |
+| URI | Backend | Notes |
+|-----|---------|-------|
+| `secretx:env:MY_SECRET` | Environment variable | |
+| `secretx:file:/etc/secrets/key` | File (absolute path) | |
+| `secretx:file:relative/path` | File (relative to CWD) | |
+| `secretx:aws-kms:alias/my-key` | AWS KMS | signing only |
+| `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager | |
+| `secretx:aws-sm:prod/my-secret?field=password` | AWS Secrets Manager | extract one JSON field |
+| `secretx:aws-ssm:prod/my-param` | AWS SSM Parameter Store | `SecureString` decrypted automatically |
+| `secretx:aws-ssm:prod/my-param?version=3` | AWS SSM Parameter Store | specific version |
+| `secretx:azure-kv:myvault/mysecret` | Azure Key Vault | also `SigningBackend` for HSM vaults |
+| `secretx:bitwarden:myproject/MY_SECRET` | Bitwarden Secrets Manager | auth via `BWS_ACCESS_TOKEN` |
+| `secretx:doppler:myproject/prd/MY_SECRET` | Doppler | auth via `DOPPLER_TOKEN` |
+| `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
+| `secretx:keyring:myapp/my-key` | OS keychain | desktop sessions only |
+| `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
+| `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB` env var |
+| `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
+| `secretx:wolfhsm:my-key` | wolfHSM secure element | also `SigningBackend`; transport via `WOLFHSM_SERVER` |
 
 The `from_uri` call constructs the backend and validates the URI syntax. It does not make any
 network call or file read. Fetch happens on first `get`.
@@ -73,6 +90,10 @@ features.
 [dependencies]
 secretx = { version = "0.3", features = ["aws-sm", "file"] }
 ```
+
+Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
+`cache`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`, `keyring`,
+`local-signing`, `pkcs11`, `wolfhsm`.
 
 ```rust
 use secretx::{SecretStore, SecretValue};
@@ -162,9 +183,44 @@ dispatch functions. Backend crates have no compile-time feature guards.
 | `secretx-gcp-sm` | GCP Secret Manager backend |
 | `secretx-hashicorp-vault` | HashiCorp Vault backend |
 | `secretx-keyring` | OS keychain backend (macOS, Linux, Windows) |
+| `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
 | `secretx` | Umbrella: re-exports `secretx-core` + `from_uri` dispatch |
+
+---
+
+## Security guarantees
+
+1. **`SecretValue` memory is zeroed on drop.** `Zeroizing<Vec<u8>>` ensures this. Backends never
+   copy secret bytes into non-`Zeroizing` buffers.
+
+2. **No `Debug` or `Display`.** `SecretValue` does not implement these traits. Tracing spans and
+   log lines cannot accidentally format a secret.
+
+3. **No logging of secret content.** Backends log the secret name and backend; never the bytes.
+
+4. **URI parsing does not fetch.** `from_uri` validates URI syntax only — no network call, no
+   file read. Secrets that are never requested are never fetched.
+
+5. **Unavailability is a hard error.** If the backend is unreachable and the cache has no entry,
+   `get` returns `SecretError::Unavailable`. There is no silent fallback to an empty string.
+
+6. **`put` access is controlled at the backend.** This crate does not enforce IAM or ACLs; it
+   relies on the backend to reject unauthorized writes.
+
+---
+
+## Comparison
+
+| | `secretx` | Roll-your-own | Direct SDK | `config-rs` |
+|---|---|---|---|---|
+| Backend-agnostic | Yes | No | No | No |
+| Memory zeroed on drop | Yes | Varies | No | No |
+| URI-driven backend selection | Yes | No | No | No |
+| TTL caching | Yes | Varies | No | No |
+| HSM signing support | Yes | Rarely | Separate SDK | No |
+| `cargo test` without cloud creds | Yes (file/env) | Varies | No | Yes |
 
 ---
 
@@ -193,6 +249,48 @@ All backends are implemented. Integration test coverage as of 2026-04-23:
 | `wolfhsm` | ➖ stub only | returns `Unavailable`; requires wolfHSM native library + device |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.
+
+---
+
+## Versioning
+
+All crates in the workspace share a single version number.
+
+- **Patch** (`0.x.Y`): bug fixes and documentation; no API change.
+- **Minor** (`0.X.0`): new backends, new optional methods, additive features.
+- **Major** (`X.0.0`): breaking changes to `SecretStore`, `SecretValue`, or `SecretError`.
+
+Commits that remove or incompatibly change a public item use the `!` breaking-change marker
+(`feat!:`, `fix!:`) or a `BREAKING CHANGE:` footer, even on 0.x releases.
+
+---
+
+## Releasing
+
+All crates must be published in dependency order. A crate cannot be published until all of its
+workspace dependencies are already on crates.io.
+
+```
+1. secretx-core
+2. secretx-cache
+3. All backend crates (any order — each depends only on secretx-core)
+4. secretx  (depends on all of the above)
+```
+
+Pre-flight checks before publishing:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-features --workspace -- -D warnings
+cargo test --workspace --all-features
+cargo audit
+RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --no-deps --all-features --workspace
+cargo hack check --feature-powerset --depth 2 -p secretx
+```
+
+Publish each crate with `cargo publish -p <crate>`, waiting ~30 s between each for the
+crates.io index to update. After publishing, tag the release (`git tag vX.Y.Z`) and create a
+GitHub release with the relevant CHANGELOG entry.
 
 ---
 

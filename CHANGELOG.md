@@ -4,21 +4,65 @@
 
 ### Breaking changes
 
-- **`put()` removed from `SecretStore`** — callers using `store.put(value).await` must now depend on
-  `WritableSecretStore` and call `from_uri_writable` to obtain a writable handle. `from_uri` still
-  works for read-only access; the call site is unchanged.
+- **URI scheme changed from `secretx://` to `secretx:`** — the old `secretx://backend/path`
+  format abused RFC 3986 authority syntax and required an awkward double-slash for absolute paths
+  (`secretx://file//etc/key`). The new `secretx:backend:path` format is a proper RFC 3986 opaque
+  URI. Query parameters are unchanged.
+
+  Find all old-format URIs in a project:
+
+  ```sh
+  grep -r 'secretx://' . --include="*.toml" --include="*.yaml" --include="*.yml" \
+    --include="*.env" --include="*.json" --include="*.rs" --include="*.md"
+  ```
+
+  Migrate with sed (Linux):
+
+  ```sh
+  find . -type f \( -name "*.toml" -o -name "*.yaml" -o -name "*.yml" \
+    -o -name "*.env" -o -name "*.json" -o -name "*.rs" -o -name "*.md" \) \
+    -exec sed -i -E 's|secretx://([^/?]+)/|secretx:\1:|g' {} \;
+  ```
+
+  Migrate with sed (macOS):
+
+  ```sh
+  find . -type f \( -name "*.toml" -o -name "*.yaml" -o -name "*.yml" \
+    -o -name "*.env" -o -name "*.json" -o -name "*.rs" -o -name "*.md" \) \
+    -exec sed -i '' -E 's|secretx://([^/?]+)/|secretx:\1:|g' {} \;
+  ```
+
+  | Before (v0.2) | After (v0.3) |
+  |---------------|--------------|
+  | `secretx://env/MY_VAR` | `secretx:env:MY_VAR` |
+  | `secretx://file/relative/path` | `secretx:file:relative/path` |
+  | `secretx://file//etc/secrets/key` | `secretx:file:/etc/secrets/key` |
+  | `secretx://aws-sm/prod/db-password` | `secretx:aws-sm:prod/db-password` |
+  | `secretx://aws-sm/prod/db-password?field=pw` | `secretx:aws-sm:prod/db-password?field=pw` |
+  | `secretx://aws-ssm/prod/db/password` | `secretx:aws-ssm:prod/db/password` |
+  | `secretx://aws-kms/alias/my-key` | `secretx:aws-kms:alias/my-key` |
+  | `secretx://azure-kv/myvault/mysecret` | `secretx:azure-kv:myvault/mysecret` |
+  | `secretx://vault/secret/myapp` | `secretx:vault:secret/myapp` |
+  | `secretx://pkcs11/0/my-key` | `secretx:pkcs11:0/my-key` |
+  | `secretx://wolfhsm/my-label` | `secretx:wolfhsm:my-label` |
+
+  Passing an old-format URI at runtime returns a clear error pointing to this changelog.
+
+- **`put()` removed from `SecretStore`** — callers using `store.put(value).await` must now
+  depend on `WritableSecretStore` and call `from_uri_writable` to obtain a writable handle.
+  `from_uri` still works for read-only access; the call site is unchanged.
 
 ### New
 
-- **`WritableSecretStore` subtrait** — `pub trait WritableSecretStore: SecretStore`. Adds `put()`.
-  Implemented by all backends that support writes: `file`, `keyring`, `aws-sm`, `aws-ssm`,
-  `azure-kv`, `doppler`, `gcp-sm`, `hashicorp-vault`, `pkcs11`. Read-only backends (`env`,
-  `bitwarden`) implement only `SecretStore`.
+- **`WritableSecretStore` subtrait** — `pub trait WritableSecretStore: SecretStore`. Adds
+  `put()`. Implemented by all backends that support writes: `file`, `keyring`, `aws-sm`,
+  `aws-ssm`, `azure-kv`, `doppler`, `gcp-sm`, `hashicorp-vault`, `pkcs11`. Read-only backends
+  (`env`, `bitwarden`) implement only `SecretStore`.
 
 - **`from_uri_writable(uri)`** in the `secretx` umbrella crate — returns
-  `Arc<dyn WritableSecretStore>`. Rejects read-only backends (`env`, `bitwarden`) and signing-only
-  backends (`aws-kms`, `local-signing`, `wolfhsm`) with `SecretError::InvalidUri` at construction
-  time.
+  `Arc<dyn WritableSecretStore>`. Rejects read-only backends (`env`, `bitwarden`) and
+  signing-only backends (`aws-kms`, `local-signing`, `wolfhsm`) with `SecretError::InvalidUri`
+  at construction time.
 
 - **`WritableSecretStore` re-exported** from the `secretx` umbrella crate.
 
@@ -55,10 +99,22 @@ let value = store.get().await?;             // unchanged
 
 `Arc<dyn WritableSecretStore>` does not automatically coerce to `Arc<dyn SecretStore>` on Rust
 1.75–1.85 (current MSRV). If you need both handles for the same backend, call `from_uri` and
-`from_uri_writable` separately with the same URI string. Calling `.get()` and `.refresh()` directly
-on an `Arc<dyn WritableSecretStore>` works on all supported toolchains via supertrait method
-dispatch.
+`from_uri_writable` separately with the same URI string. Calling `.get()` and `.refresh()`
+directly on an `Arc<dyn WritableSecretStore>` works on all supported toolchains via supertrait
+method dispatch.
 
 ## [0.2.0] - 2026-04-23
 
-Initial public release.
+Initial public release. Workspace restructured: the single-crate `secretx` 0.1.0 was split into
+`secretx-core` plus per-backend crates. The `secretx` umbrella crate re-exports everything from
+`secretx-core` at the same public paths — a `cargo update` is sufficient for users who depended
+only on the `secretx` umbrella crate.
+
+| 0.1.0 path | 0.2.0 path | Status |
+|------------|------------|--------|
+| `secretx::SecretValue` | `secretx::SecretValue` (re-export) | compatible |
+| `secretx::SecretError` | `secretx::SecretError` (re-export) | compatible |
+| `secretx::SecretStore` | `secretx::SecretStore` (re-export) | compatible |
+| `secretx::SigningBackend` | `secretx::SigningBackend` (re-export) | compatible |
+| `secretx::SigningAlgorithm` | `secretx::SigningAlgorithm` (re-export) | compatible |
+| `secretx::get_blocking` | `secretx::get_blocking` (feature `blocking`) | compatible |
