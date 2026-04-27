@@ -186,5 +186,5 @@ secretx/            src/lib.rs  — re-exports secretx-core + from_uri dispatch 
 `secretx-wolfhsm`.
 The URI scheme `secretx:` matches the umbrella crate name.
 
-### No git remote (local-only)
-This repo has no git remote configured. `git push` is not possible. Use `bd dolt push` for beads sync.
+### Git remote
+Remote: `git@github.com:MarkAtwood/crate-secretx.git` (origin). Use `bd dolt push` for beads sync in addition to `git push`.
