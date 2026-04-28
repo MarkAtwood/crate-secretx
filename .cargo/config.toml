@@ -1,0 +1,23 @@
+# Build configuration for the secretx workspace.
+#
+# wolfhsm backend: wolfSSL headers and library.
+#
+# wolfhsm-src requires wolfSSL headers built with user_settings.h support.
+# The system wolfssl at /usr/local uses options.h only (no user_settings.h),
+# so we point to a local custom build that supports both modes.
+#
+# wolfHSM source is auto-discovered at ~/GIT/wolfHSM by wolfhsm-src/build.rs.
+# Set WOLFHSM_SRC to override.
+#
+# These paths are machine-specific.  On a different machine:
+#   - Build wolfssl with ./configure --enable-usersettings (or similar) and
+#     set WOLFSSL_DIR to the install prefix.
+#   - Clone wolfHSM: git clone https://github.com/wolfSSL/wolfHSM ~/GIT/wolfHSM
+[env]
+WOLFSSL_DIR = "/home/mark/WORK/wolfssl-rs/wolfssl-install"
+
+[target.x86_64-unknown-linux-gnu]
+# Embed RPATH so tests load wolfssl-install's libwolfssl.so.44.1.0 instead of
+# the system libwolfssl.so.44.0.1.  Both have SONAME libwolfssl.so.44; without
+# DT_RPATH the ldconfig cache entry for /usr/local/lib wins.
+rustflags = ["-C", "link-arg=-Wl,--disable-new-dtags,-rpath,/home/mark/WORK/wolfssl-rs/wolfssl-install/lib"]
