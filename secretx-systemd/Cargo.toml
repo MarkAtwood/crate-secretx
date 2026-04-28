@@ -15,8 +15,8 @@ repository = "https://github.com/MarkAtwood/crate-secretsx"
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
 inventory = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
