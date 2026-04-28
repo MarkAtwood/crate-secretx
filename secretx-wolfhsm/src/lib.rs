@@ -408,10 +408,16 @@ impl WritableSecretStore for WolfHsmBackend {
                         .connected_client()
                         .nvm_overwrite(id, 0, 0, &label, bytes.as_ref())
                         .map_err(backend_err)?;
+                    // find_cached_or_scan already set cached_nvm_id = Some(id);
+                    // this write is defensive — makes the cache invariant visible
+                    // at the call site and guards against future refactors that
+                    // move or bypass find_cached_or_scan.
                     guard.cached_nvm_id = Some(id);
                 }
                 None => {
-                    // New object: find a free NVM ID.
+                    // New object: find a free NVM ID and add it.
+                    // The free_id is not yet in the cache (find_cached_or_scan
+                    // returned None), so we must update cached_nvm_id here.
                     let free_id = find_free_id(guard.connected_client())?;
                     guard
                         .connected_client()
