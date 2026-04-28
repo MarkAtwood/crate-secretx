@@ -20,8 +20,8 @@ Requires `GCP_ACCESS_TOKEN` to be set in the environment at construction time. O
 
 ```toml
 [dependencies]
-secretx-gcp-sm = "0.2"
-secretx-core = "0.2"
+secretx-gcp-sm = "0.3"
+secretx-core = "0.3"
 ```
 
 ```rust

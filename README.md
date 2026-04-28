@@ -228,7 +228,7 @@ dispatch functions. Backend crates have no compile-time feature guards.
 
 Early development. The API may change before 1.0.
 
-All backends are implemented. Integration test coverage as of 2026-04-23:
+All backends are implemented. Integration test coverage as of 2026-04-28:
 
 | Backend | Integration tested | Notes |
 |---------|-------------------|-------|
@@ -242,7 +242,7 @@ All backends are implemented. Integration test coverage as of 2026-04-23:
 | `hashicorp-vault` | ✅ local Vault | tested against Vault dev server |
 | `pkcs11` | ✅ SoftHSM2 | EC P-256 sign + data object get/put |
 | `azure-kv` | ⚠️ unit tests only | needs Azure subscription + Key Vault |
-| `gcp-sm` | ⚠️ unit tests only | needs GCP project + Secret Manager API |
+| `gcp-sm` | ✅ real GCP | tested against GCP Secret Manager; get/put/refresh + CRC32C integrity |
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
 | `keyring` | ❌ headless fails | requires desktop keyring daemon; `put` succeeds but `get` returns `NotFound` on a headless server |
