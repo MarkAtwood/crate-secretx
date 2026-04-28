@@ -206,6 +206,7 @@ README in its crate directory. Contributions welcome; see the roadmap issues in 
 | `secretx-barbican` | `secretx:barbican:<secret-uuid>` | OpenStack Barbican; covers OVHcloud, Open Telekom Cloud, Cleura, STACKIT, VK Cloud, and any OpenStack operator |
 | `secretx-huawei-csms` | `secretx:huawei-csms:<region>/<secret-name>` | Huawei Cloud CSMS (DEW umbrella); OSCCA SM4 available for China-region deployments |
 | `secretx-ibm-sm` | `secretx:ibm-sm:<region>/<instance-id>/<secret-id>` | IBM Cloud Secrets Manager (Vault Enterprise under the hood); for IBM HPCS HSM use `secretx-pkcs11` |
+| `secretx-k8s` | `secretx:k8s:<namespace>/<secret-name>` | Kubernetes Secret object; reads whatever ESO or Secrets Store CSI Driver materialized |
 | `secretx-oci-vault` | `secretx:oci-vault:<compartment-id>/<secret-name>` | OCI Vault; also `SigningBackend` for HSM-backed keys |
 | `secretx-scaleway-sm` | `secretx:scaleway-sm:<project-id>/<secret-name>` | Scaleway Secret Manager |
 | `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
