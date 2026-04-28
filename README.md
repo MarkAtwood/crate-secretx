@@ -37,7 +37,7 @@ as one backend option for the rare service that runs inside a user session.
 
 - **Not a secrets manager.** Does not store, encrypt, or audit secrets — that is the backend's job.
 - **Not a key management system.** Does not generate keys or rotate credentials autonomously.
-  Exception: the HSM backends (`aws-kms`, `azure-kv`, `pkcs11`, `wolfhsm`) expose `SigningBackend`
+  Exception: the HSM backends (`aws-kms`, `azure-kv`, `pkcs11`) expose `SigningBackend`
   for keys that must never leave the hardware.
 - **Not a configuration loader.** Loads secrets (sensitive values that must be zeroed on drop),
   not config (non-sensitive structured data). Use `config-rs` or `figment` for the rest.
@@ -72,7 +72,7 @@ secretx:<backend>:<path>[?options]
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB` env var |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
-| `secretx:wolfhsm:my-key` | wolfHSM secure element | also `SigningBackend`; transport via `WOLFHSM_SERVER` |
+| `secretx:wolfhsm:my-key` | wolfHSM secure element | transport via `?server=` or `WOLFHSM_SERVER` |
 
 The `from_uri` call constructs the backend and validates the URI syntax. It does not make any
 network call or file read. Fetch happens on first `get`.
@@ -246,7 +246,7 @@ All backends are implemented. Integration test coverage as of 2026-04-23:
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
 | `keyring` | ❌ headless fails | requires desktop keyring daemon; `put` succeeds but `get` returns `NotFound` on a headless server |
-| `wolfhsm` | ➖ stub only | returns `Unavailable`; requires wolfHSM native library + device |
+| `wolfhsm` | ⚠️ unit tests only | requires wolfHSM server or simulator; set `WOLFHSM_SERVER` |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.
 
