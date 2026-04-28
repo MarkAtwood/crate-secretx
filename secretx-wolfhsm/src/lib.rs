@@ -263,13 +263,13 @@ fn parse_tcp_port(addr: &str, port_str: &str) -> Result<u16, SecretError> {
 
 /// Ensure `state.client` is connected, connecting if necessary.
 ///
-/// Returns a reference to the client. Any earlier connection error is retried
-/// on the next call — a poisoned `state.client = None` signals reconnect.
-fn ensure_connected<'a>(
-    state: &'a mut WolfHsmState,
+/// Any earlier connection error is retried on the next call — clearing
+/// `state.client` to `None` signals that a reconnect should be attempted.
+fn ensure_connected(
+    state: &mut WolfHsmState,
     server: &str,
     client_id: u8,
-) -> Result<&'a mut Client, SecretError> {
+) -> Result<(), SecretError> {
     if state.client.is_none() {
         let addr = resolve_server(server)?;
         let transport = make_transport(&addr)?;
@@ -280,7 +280,7 @@ fn ensure_connected<'a>(
             })?;
         state.client = Some(client);
     }
-    Ok(state.connected_client())
+    Ok(())
 }
 
 // ── NVM scan helpers ──────────────────────────────────────────────────────────
