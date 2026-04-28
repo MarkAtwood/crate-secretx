@@ -203,11 +203,7 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
     // IP address, not URL-style bracket notation.
     if let Some(rest) = addr.strip_prefix('[') {
         if let Some((host, port_str)) = rest.split_once("]:") {
-            let port: u16 = port_str.parse().map_err(|_| {
-                SecretError::InvalidUri(format!(
-                    "wolfhsm server `{addr}`: port `{port_str}` is not a valid u16"
-                ))
-            })?;
+            let port = parse_tcp_port(addr, port_str)?;
             return Ok(Transport::Tcp {
                 ip: host.to_owned(),
                 port,
@@ -220,11 +216,7 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
 
     // IPv4 / hostname: host:port.
     if let Some((host, port_str)) = addr.rsplit_once(':') {
-        let port: u16 = port_str.parse().map_err(|_| {
-            SecretError::InvalidUri(format!(
-                "wolfhsm server `{addr}`: port `{port_str}` is not a valid u16"
-            ))
-        })?;
+        let port = parse_tcp_port(addr, port_str)?;
         return Ok(Transport::Tcp {
             ip: host.to_owned(),
             port,
@@ -235,6 +227,27 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
         "wolfhsm server `{addr}` must be `host:port` (TCP), `[<ip>]:<port>` (IPv6 TCP), \
          or `/path` (UDS)"
     )))
+}
+
+/// Parse and validate a TCP port string for wolfhsm.
+///
+/// wolfhsm's C TCP transport stores the port as `i16`, so values above 32767
+/// are rejected at `Client::connect` time.  Catching the limit here returns
+/// [`SecretError::InvalidUri`] (a permanent configuration error) rather than
+/// [`SecretError::Unavailable`] (which implies retriability).
+fn parse_tcp_port(addr: &str, port_str: &str) -> Result<u16, SecretError> {
+    let port: u16 = port_str.parse().map_err(|_| {
+        SecretError::InvalidUri(format!(
+            "wolfhsm server `{addr}`: port `{port_str}` is not a valid u16"
+        ))
+    })?;
+    if port > 32767 {
+        return Err(SecretError::InvalidUri(format!(
+            "wolfhsm server `{addr}`: port {port} exceeds 32767 \
+             (wolfhsm C transport uses i16 for port numbers)"
+        )));
+    }
+    Ok(port)
 }
 
 /// Ensure `state.client` is connected, connecting if necessary.
@@ -263,42 +276,53 @@ fn ensure_connected<'a>(
 
 /// Scan all NVM data objects for one whose label matches `label`.
 ///
-/// Returns the first matching [`NvmId`], or `None` if not found.
+/// Returns `(found_id, all_ids)` where `all_ids` is the full list from
+/// `nvm_list`.  The list is returned unconditionally so the caller can pass
+/// it to [`find_free_id_from_list`] on a miss, avoiding a second round-trip.
+///
 /// `WH_ERROR_NOTFOUND` from `nvm_metadata` is treated as a stale list entry
 /// and skipped rather than propagated.
 ///
 /// # Panics
 ///
 /// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
-fn find_by_label(client: &mut Client, label: &str) -> Result<Option<NvmId>, SecretError> {
+fn find_by_label(
+    client: &mut Client,
+    label: &str,
+) -> Result<(Option<NvmId>, Vec<NvmId>), SecretError> {
     let ids = client.nvm_list().map_err(backend_err)?;
-    for id in ids {
+    let mut found = None;
+    for &id in &ids {
         match client.nvm_metadata(id) {
             Ok(meta) => {
                 if meta.label_str() == Some(label) {
-                    return Ok(Some(id));
+                    found = Some(id);
+                    break;
                 }
             }
             Err(wolfhsm::Error::Wh { code }) if code == WH_ERROR_NOTFOUND => continue,
             Err(e) => return Err(backend_err(e)),
         }
     }
-    Ok(None)
+    Ok((found, ids))
 }
 
-/// Find the first NVM ID in `1..=u16::MAX` not currently in use.
+/// Find the first NVM ID in `1..=u16::MAX` not present in `ids`.
 ///
-/// Used when creating a brand-new NVM object (no existing ID to reuse).
+/// `ids` is the full list returned by a recent `nvm_list` call, passed in to
+/// avoid a redundant round-trip to the server.
 ///
 /// ID 0 is excluded: `WH_KEYID_ERASED = 0x0000` (wolfhsm/wh_keyid.h:38) is
 /// the sentinel "no ID" value and cannot be used for real objects.
-fn find_free_id(client: &mut Client) -> Result<NvmId, SecretError> {
-    let used: HashSet<u16> = client
-        .nvm_list()
-        .map_err(backend_err)?
-        .into_iter()
-        .map(u16::from)
-        .collect();
+///
+/// # TOCTOU note
+///
+/// Another client with the same `client_id` may allocate the returned ID
+/// between this call and the subsequent `nvm_add`.  If `nvm_add` fails,
+/// propagate [`SecretError::Backend`] — do not retry automatically.  wolfHSM
+/// has no atomic find-or-allocate API, so the gap is inherent to the protocol.
+fn find_free_id_from_list(ids: Vec<NvmId>) -> Result<NvmId, SecretError> {
+    let used: HashSet<u16> = ids.into_iter().map(u16::from).collect();
     for n in 1u16..=u16::MAX {
         if !used.contains(&n) {
             return Ok(NvmId::new(n));
@@ -310,16 +334,28 @@ fn find_free_id(client: &mut Client) -> Result<NvmId, SecretError> {
     })
 }
 
+/// Result of [`find_cached_or_scan`].
+///
+/// The `NotFound` variant carries the full NVM ID list so that `put()` can
+/// pass it directly to [`find_free_id_from_list`] without issuing a second
+/// `nvm_list` round-trip.
+enum FindResult {
+    /// Object exists at this NVM ID.
+    Found(NvmId),
+    /// Object not found; the full current NVM ID list is enclosed.
+    NotFound(Vec<NvmId>),
+}
+
 /// Find the NVM ID for `label`, using the cache when valid.
 ///
-/// Returns `Ok(Some(id))` if the object exists (from cache or full scan),
-/// `Ok(None)` if not present in NVM.  Updates `state.cached_nvm_id` on hit;
-/// clears it on cache miss.
+/// Returns [`FindResult::Found`] if the object exists (from cache or full
+/// scan), or [`FindResult::NotFound`] with the full ID list if absent.
+/// Updates `state.cached_nvm_id` on hit; clears it on cache miss.
 ///
 /// # Panics
 ///
 /// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
-fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<Option<NvmId>, SecretError> {
+fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<FindResult, SecretError> {
     // Validate cache before trusting it: another client may have deleted and
     // recreated the object under a different NVM ID.
     if let Some(cached) = state.cached_nvm_id {
@@ -331,16 +367,19 @@ fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<Option<N
             }
         };
         if still_valid {
-            return Ok(Some(cached));
+            return Ok(FindResult::Found(cached));
         }
         state.cached_nvm_id = None;
     }
 
-    let id = find_by_label(state.connected_client(), label)?;
-    if let Some(id) = id {
-        state.cached_nvm_id = Some(id);
+    let (id_opt, ids) = find_by_label(state.connected_client(), label)?;
+    match id_opt {
+        Some(id) => {
+            state.cached_nvm_id = Some(id);
+            Ok(FindResult::Found(id))
+        }
+        None => Ok(FindResult::NotFound(ids)),
     }
-    Ok(id)
 }
 
 /// Return the NVM ID for `label`, returning [`SecretError::NotFound`] if absent.
@@ -351,7 +390,10 @@ fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<Option<N
 ///
 /// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
 fn get_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<NvmId, SecretError> {
-    find_cached_or_scan(state, label)?.ok_or(SecretError::NotFound)
+    match find_cached_or_scan(state, label)? {
+        FindResult::Found(id) => Ok(id),
+        FindResult::NotFound(_) => Err(SecretError::NotFound),
+    }
 }
 
 // ── SecretStore ───────────────────────────────────────────────────────────────
@@ -368,7 +410,10 @@ impl SecretStore for WolfHsmBackend {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
             ensure_connected(&mut guard, &server, client_id)?;
             let id = get_cached_or_scan(&mut guard, &label)?;
-            let bytes = guard.connected_client().nvm_read(id, 0).map_err(backend_err)?;
+            let bytes = guard
+                .connected_client()
+                .nvm_read(id, 0)
+                .map_err(backend_err)?;
             Ok(SecretValue::new(bytes))
         })
         .await
@@ -399,10 +444,8 @@ impl WritableSecretStore for WolfHsmBackend {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
             ensure_connected(&mut guard, &server, client_id)?;
 
-            let maybe_id = find_cached_or_scan(&mut guard, &label)?;
-
-            match maybe_id {
-                Some(id) => {
+            match find_cached_or_scan(&mut guard, &label)? {
+                FindResult::Found(id) => {
                     // Overwrite: wolfhsm deletes then re-adds at the same ID.
                     guard
                         .connected_client()
@@ -414,11 +457,15 @@ impl WritableSecretStore for WolfHsmBackend {
                     // move or bypass find_cached_or_scan.
                     guard.cached_nvm_id = Some(id);
                 }
-                None => {
-                    // New object: find a free NVM ID and add it.
-                    // The free_id is not yet in the cache (find_cached_or_scan
-                    // returned None), so we must update cached_nvm_id here.
-                    let free_id = find_free_id(guard.connected_client())?;
+                FindResult::NotFound(ids) => {
+                    // New object: pick a free NVM ID from the list that
+                    // find_cached_or_scan already fetched, avoiding a second
+                    // nvm_list round-trip to the server.
+                    // TOCTOU: another client with the same client_id may
+                    // allocate this ID between find_free_id_from_list and
+                    // nvm_add — wolfHSM has no atomic allocate API.  If
+                    // nvm_add fails, propagate Backend; do not retry blindly.
+                    let free_id = find_free_id_from_list(ids)?;
                     guard
                         .connected_client()
                         .nvm_add(free_id, 0, 0, &label, bytes.as_ref())
@@ -505,16 +552,14 @@ mod tests {
 
     #[test]
     fn from_uri_with_server_param() {
-        let b =
-            WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=127.0.0.1:8080").unwrap();
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=127.0.0.1:8080").unwrap();
         assert_eq!(b.label, "my-key");
         assert_eq!(b.server, "127.0.0.1:8080");
     }
 
     #[test]
     fn from_uri_with_client_id_param() {
-        let b =
-            WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?client_id=7").unwrap();
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?client_id=7").unwrap();
         assert_eq!(b.client_id, 7);
     }
 
@@ -628,9 +673,40 @@ mod tests {
     #[test]
     fn transport_invalid_ipv6_malformed() {
         assert!(matches!(
-            make_transport("[::1]"),       // missing port
+            make_transport("[::1]"), // missing port
             Err(SecretError::InvalidUri(_))
         ));
+    }
+
+    #[test]
+    fn transport_tcp_port_too_high_ipv4() {
+        // wolfhsm C transport uses i16; ports > 32767 must be InvalidUri, not
+        // Unavailable (which implies retriability).
+        assert!(matches!(
+            make_transport("host:32768"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn transport_tcp_port_max_valid_ipv4() {
+        // 32767 == i16::MAX — the highest port wolfhsm accepts.
+        let t = make_transport("host:32767").unwrap();
+        assert!(matches!(t, Transport::Tcp { port, .. } if port == 32767));
+    }
+
+    #[test]
+    fn transport_tcp_port_too_high_ipv6() {
+        assert!(matches!(
+            make_transport("[::1]:40000"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn transport_tcp_port_max_valid_ipv6() {
+        let t = make_transport("[::1]:32767").unwrap();
+        assert!(matches!(t, Transport::Tcp { port, .. } if port == 32767));
     }
 
     // ── SecretStore / SigningBackend (no server) ──────────────────────────────
