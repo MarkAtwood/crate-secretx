@@ -6,7 +6,9 @@
 //!   object on the wolfHSM server.
 //! - `server` — (optional) wolfHSM server address. Falls back to the
 //!   `WOLFHSM_SERVER` environment variable if absent.
-//!   Format: `host:port` for TCP (e.g. `127.0.0.1:8080`) or `/path` for UDS.
+//!   Format: `host:port` for TCP (e.g. `127.0.0.1:8080`), `[ip]:port` for
+//!   IPv6 TCP, or `/path` for UDS. TCP port must be ≤ 32767 (wolfhsm C
+//!   transport stores port as `i16`).
 //! - `client_id` — (optional) wolfHSM client ID (0–255, default 1). wolfHSM
 //!   uses the client ID to namespace NVM objects and keys. Two clients with
 //!   the same `client_id` share the same NVM namespace on the server.
