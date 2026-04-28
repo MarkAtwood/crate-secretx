@@ -3,17 +3,20 @@
 //! # Integration test status
 //!
 //! Unit tests (URI parsing, error mapping) pass without a keyring daemon.
-//! The integration test (`SECRETX_KEYRING_INTEGRATION_TESTS=1`) requires a
-//! running secret-service provider. On a headless Linux server, start one with:
+//! The integration test (`SECRETX_KEYRING_INTEGRATION_TESTS=1`) uses the Linux
+//! kernel keyring directly — no daemon required. Run with:
 //!
 //! ```sh
-//! dbus-run-session -- bash -c \
-//!   'eval $(echo "" | gnome-keyring-daemon --unlock --components=secrets) && \
-//!    SECRETX_KEYRING_INTEGRATION_TESTS=1 cargo test -p secretx-keyring'
+//! SECRETX_KEYRING_INTEGRATION_TESTS=1 cargo test -p secretx-keyring
 //! ```
 //!
-//! **Integration-tested 2026-04-28**: Linux headless (gnome-keyring-daemon via
-//! dbus-run-session); macOS and Windows not yet tested.
+//! On Linux, secrets are stored in the kernel
+//! [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html),
+//! which survives reboots for a configurable window (default: a few days). No
+//! daemon is needed.
+//!
+//! **Integration-tested 2026-04-28**: Linux headless (kernel persistent keyring,
+//! no daemon); macOS and Windows not yet tested.
 //!
 //! URI: `secretx:keyring:<service>/<account>`
 //!
