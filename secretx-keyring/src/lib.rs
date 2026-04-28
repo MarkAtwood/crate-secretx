@@ -1,4 +1,4 @@
-//! OS keychain backend for secretx.
+//! Linux kernel keyring backend for secretx.
 //!
 //! # Integration test status
 //!
@@ -16,7 +16,7 @@
 //! daemon is needed.
 //!
 //! **Integration-tested 2026-04-28**: Linux headless (kernel persistent keyring,
-//! no daemon); macOS and Windows not yet tested.
+//! no daemon).
 //!
 //! URI: `secretx:keyring:<service>/<account>`
 //!
@@ -37,7 +37,7 @@
 
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 
-/// Backend that reads and writes secrets via the OS keychain (libsecret, Keychain, DPAPI).
+/// Backend that reads and writes secrets via the Linux kernel persistent keyring.
 ///
 /// The URI path encodes both a service name and an account name separated by
 /// the first `/`:
@@ -93,7 +93,7 @@ impl KeyringBackend {
         // the full stored value, which is confusing.  Reject early.
         if parsed.param("field").is_some() {
             return Err(SecretError::InvalidUri(
-                "keyring does not support ?field= (keyring values are opaque strings, not JSON \
+                "keyring does not support ?field= (kernel keyring values are opaque strings, not JSON \
                  objects); remove ?field= or use a backend that supports JSON field extraction \
                  (e.g. aws-sm)"
                     .into(),
@@ -111,8 +111,7 @@ impl SecretStore for KeyringBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let service = self.service.clone();
         let account = self.account.clone();
-        // keyring calls (macOS Security.framework, Windows Credential Manager,
-        // Linux D-Bus) are synchronous and can block for non-trivial durations.
+        // Kernel keyring calls (keyctl syscalls) are synchronous.
         // Run them on a blocking thread to avoid stalling the async executor.
         tokio::task::spawn_blocking(move || {
             let entry =
@@ -181,6 +180,7 @@ impl WritableSecretStore for KeyringBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 inventory::submit!(secretx_core::BackendRegistration {
     name: "keyring",
     factory: |uri: &str| {
@@ -189,6 +189,7 @@ inventory::submit!(secretx_core::BackendRegistration {
     },
 });
 
+#[cfg(target_os = "linux")]
 inventory::submit!(secretx_core::WritableBackendRegistration {
     name: "keyring",
     factory: |uri: &str| {
@@ -273,13 +274,12 @@ mod tests {
 
     // ── Integration tests (require OS keychain) ───────────────────────────────
     //
-    // Gated behind SECRETX_KEYRING_INTEGRATION_TESTS=1.  On headless Linux
-    // use dbus-run-session + gnome-keyring-daemon --unlock; see module doc.
+    // Gated behind SECRETX_KEYRING_INTEGRATION_TESTS=1.  No daemon required —
+    // uses the kernel persistent keyring directly.
 
-    /// Returns true if the error signals that no keyring daemon is available.
-    /// Matches any `Unavailable` variant — on Linux this covers NoStorageAccess
-    /// (no daemon running) and D-Bus connection errors.
-    fn is_no_keyring_daemon(e: &SecretError) -> bool {
+    /// Returns true if the kernel keyring is unavailable (e.g. running in a
+    /// container that restricts keyrings, or the keyutils subsystem is absent).
+    fn is_kernel_keyring_unavailable(e: &SecretError) -> bool {
         matches!(e, SecretError::Unavailable { .. })
     }
 
@@ -306,8 +306,8 @@ mod tests {
             .await;
         match put_result {
             Ok(()) => {}
-            Err(ref e) if is_no_keyring_daemon(e) => {
-                eprintln!("keyring: no storage available, skipping integration test");
+            Err(ref e) if is_kernel_keyring_unavailable(e) => {
+                eprintln!("keyring: kernel keyring unavailable, skipping integration test");
                 return;
             }
             Err(e) => panic!("put failed: {e}"),

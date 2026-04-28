@@ -1,8 +1,8 @@
 # secretx-keyring
 
-OS keychain backend for [secretx](https://crates.io/crates/secretx).
+Linux kernel keyring backend for [secretx](https://crates.io/crates/secretx).
 
-Reads and writes secrets via the platform keychain: macOS Keychain Services, Windows Credential Manager, or `libsecret` / KWallet on Linux.
+Reads and writes secrets via the Linux kernel [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html). No daemon required — secrets are stored in kernel memory, survive reboots for a configurable window (default: a few days), and are access-controlled by the kernel.
 
 ## URI
 
@@ -10,15 +10,19 @@ Reads and writes secrets via the platform keychain: macOS Keychain Services, Win
 secretx:keyring:<service>/<account>
 ```
 
-- `service` — keychain service name (groups credentials by application)
-- `account` — account name within the service
+- `service` — keyring description prefix (groups credentials by application)
+- `account` — credential identifier within the service
+
+## Requirements
+
+Linux only. Requires kernel keyutils support (standard on all modern Linux distributions).
 
 ## Usage
 
 ```toml
 [dependencies]
-secretx-keyring = "0.2"
-secretx-core = "0.2"
+secretx-keyring = "0.3"
+secretx-core = "0.3"
 ```
 
 ```rust
@@ -29,11 +33,12 @@ let store = KeyringBackend::from_uri("secretx:keyring:my-app/api-key")?;
 let value = store.get().await?;
 ```
 
-## Platform notes
+## Security notes
 
-- **macOS** — uses Keychain Services; works in both GUI and server contexts.
-- **Windows** — uses Windows Credential Manager.
-- **Linux** — requires a running keyring daemon (`gnome-keyring-daemon`, KWallet). On headless servers `put` may succeed but `get` returns `NotFound` without a daemon. Do not use in headless CI without a keyring daemon.
+- Secrets are stored in kernel memory — never written to disk as plaintext.
+- Access is controlled by the kernel's UID-based keyring permissions.
+- The persistent keyring survives reboots but expires after a configurable window (default: a few days).
+- For encrypted-at-rest storage, consider `secretx-systemd-creds` (TPM2-encrypted, tmpfs-backed) or a cloud backend.
 
 ## Part of secretx
 

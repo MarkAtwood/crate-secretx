@@ -28,8 +28,9 @@ by changing a URI in config.
 interactive desktop apps that store user-entered credentials in OS-native keychains (macOS
 Keychain, GNOME Keyring, Windows Credential Manager). Those backends require a logged-in user
 session and a running keychain daemon — conditions that don't hold on a headless server.
-`secretx` targets the daemon case. The two are complementary: `secretx-keyring` wraps `keyring`
-as one backend option for the rare service that runs inside a user session.
+`secretx` targets the daemon case. The two are complementary: `secretx-keyring` uses the
+Linux kernel persistent keyring (no daemon) for headless services; `keyring` is the right
+choice for desktop apps that need the OS keychain.
 
 ---
 
@@ -68,7 +69,7 @@ secretx:<backend>:<path>[?options]
 | `secretx:bitwarden:myproject/MY_SECRET` | Bitwarden Secrets Manager | auth via `BWS_ACCESS_TOKEN` |
 | `secretx:doppler:myproject/prd/MY_SECRET` | Doppler | auth via `DOPPLER_TOKEN` |
 | `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
-| `secretx:keyring:myapp/my-key` | OS keychain | desktop sessions only |
+| `secretx:keyring:myapp/my-key` | Linux kernel keyring | no daemon; Linux only |
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB` env var |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
@@ -182,7 +183,7 @@ dispatch functions. Backend crates have no compile-time feature guards.
 | `secretx-doppler` | Doppler backend |
 | `secretx-gcp-sm` | GCP Secret Manager backend |
 | `secretx-hashicorp-vault` | HashiCorp Vault backend |
-| `secretx-keyring` | OS keychain backend (macOS, Linux, Windows) |
+| `secretx-keyring` | Linux kernel keyring backend |
 | `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
@@ -245,7 +246,7 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `gcp-sm` | ✅ real GCP | tested against GCP Secret Manager; get/put/refresh + CRC32C integrity |
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
-| `keyring` | ✅ kernel keyring headless | Linux headless via kernel persistent keyring (no daemon); macOS and Windows not yet tested |
+| `keyring` | ✅ kernel keyring headless | Linux only; kernel persistent keyring, no daemon required |
 | `wolfhsm` | ⚠️ unit tests only | requires wolfHSM server or simulator; set `WOLFHSM_SERVER` |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.
