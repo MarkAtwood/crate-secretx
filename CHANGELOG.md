@@ -1,5 +1,28 @@
 # Changelog
 
+## [secretx-wolfhsm 0.3.1] - 2026-04-27
+
+### Fixed (`secretx-wolfhsm` only — other crates unchanged at 0.3.0)
+
+- **Port > 32767 in server address now returns `InvalidUri` at construction
+  time** instead of `Unavailable` at first use. wolfhsm's C TCP transport
+  stores port as `i16`; the limit is now enforced in `make_transport` and
+  the `?server=` address is validated eagerly in `from_uri()` (pure parsing,
+  no I/O). `WOLFHSM_SERVER` from the environment is still validated lazily
+  since its value is not known at construction time.
+
+- **`put()` new-object path now makes one `nvm_list` round-trip instead of
+  two.** The ID list fetched during the label scan is threaded through a new
+  `FindResult` enum to `find_free_id_from_list`, avoiding a redundant call
+  to the wolfHSM server.
+
+- **TOCTOU gap in `find_free_id` documented.** The window between the
+  ID-list snapshot and `nvm_add` is inherent to the wolfHSM protocol (no
+  atomic allocate API); callers should propagate `Backend` on conflict rather
+  than retrying automatically.
+
+---
+
 ## [0.3.0] - 2026-04-24
 
 ### Breaking changes
