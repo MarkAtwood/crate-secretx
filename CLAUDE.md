@@ -44,6 +44,7 @@ bd close <id>         # Complete work
 **CRITICAL RULES:**
 - git commit and git push require explicit user approval — never run them without asking
 - Stage changes and report what is ready; wait for the user to say "commit" or "push"
+- **Exception — review loops**: In any review loop, committing is permitted after each fix without asking. Pushing still requires explicit confirmation.
 <!-- END BEADS INTEGRATION -->
 
 
