@@ -1,12 +1,15 @@
 //! wolfHSM secure element backend for secretx.
 //!
-//! URI: `secretx:wolfhsm:<label>[?server=<addr>]`
+//! URI: `secretx:wolfhsm:<label>[?server=<addr>][?client_id=<n>]`
 //!
 //! - `label` — NVM object label (1–24 bytes, UTF-8). Identifies the data
 //!   object on the wolfHSM server.
 //! - `server` — (optional) wolfHSM server address. Falls back to the
 //!   `WOLFHSM_SERVER` environment variable if absent.
 //!   Format: `host:port` for TCP (e.g. `127.0.0.1:8080`) or `/path` for UDS.
+//! - `client_id` — (optional) wolfHSM client ID (0–255, default 1). wolfHSM
+//!   uses the client ID to namespace NVM objects and keys. Two clients with
+//!   the same `client_id` share the same NVM namespace on the server.
 //!
 //! # Transport
 //!
@@ -30,8 +33,8 @@
 //!
 //! # SigningBackend
 //!
-//! Returns [`SecretError::Unavailable`]. The wolfhsm 0.1.0 crate does not
-//! expose an API to load a persistent committed ECC key from NVM by label
+//! Returns [`SecretError::Unavailable`]. The wolfhsm crate does not yet expose
+//! an API to load a persistent committed ECC key from NVM by label
 //! (`EccP256Key::load_from_nvm`). When that API is available, signing will be
 //! implemented here.
 //!
@@ -53,7 +56,12 @@ const BACKEND: &str = "wolfhsm";
 /// Maximum NVM label length in bytes (`WH_NVM_LABEL_LEN` from wolfHSM headers).
 const NVM_LABEL_MAX: usize = 24;
 
-/// `WH_ERROR_NOTFOUND` from `wolfhsm/wh_error.h`.
+/// `WH_ERROR_NOTFOUND` from `wolfhsm/wh_error.h` line 60.
+///
+/// Returned when an NVM object or key with the given ID does not exist on the
+/// server.  Treated as a stale-list sentinel in [`find_by_label`]: if
+/// `nvm_metadata` returns this code for an ID from `nvm_list`, the entry is
+/// skipped rather than propagated as an error.
 const WH_ERROR_NOTFOUND: i32 = -2104;
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -65,6 +73,20 @@ struct WolfHsmState {
     cached_nvm_id: Option<NvmId>,
 }
 
+impl WolfHsmState {
+    /// Returns a mutable reference to the connected [`Client`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `client` is `None`. Always call [`ensure_connected`] before
+    /// this method.
+    fn connected_client(&mut self) -> &mut Client {
+        self.client
+            .as_mut()
+            .expect("wolfhsm: connected_client called before ensure_connected")
+    }
+}
+
 // ── Public backend struct ─────────────────────────────────────────────────────
 
 /// Backend that reads and writes wolfHSM NVM data objects by label.
@@ -74,11 +96,13 @@ pub struct WolfHsmBackend {
     label: String,
     /// Configured server address (`?server=` value, may be empty).
     server: String,
+    /// wolfHSM client ID (0–255). Defaults to 1.
+    client_id: u8,
     state: Arc<Mutex<WolfHsmState>>,
 }
 
 impl WolfHsmBackend {
-    /// Construct from a `secretx:wolfhsm:<label>[?server=<addr>]` URI.
+    /// Construct from a `secretx:wolfhsm:<label>[?server=<addr>][?client_id=<n>]` URI.
     ///
     /// Validates URI syntax only; no network call is made.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
@@ -109,9 +133,18 @@ impl WolfHsmBackend {
             ));
         }
         let server = parsed.param("server").unwrap_or("").to_owned();
+        let client_id: u8 = match parsed.param("client_id") {
+            None => 1,
+            Some(s) => s.parse().map_err(|_| {
+                SecretError::InvalidUri(format!(
+                    "wolfhsm `?client_id={s}` is not a valid u8 (0–255)"
+                ))
+            })?,
+        };
         Ok(Self {
             label,
             server,
+            client_id,
             state: Arc::new(Mutex::new(WolfHsmState {
                 client: None,
                 cached_nvm_id: None,
@@ -158,11 +191,34 @@ fn resolve_server(configured: &str) -> Result<String, SecretError> {
 }
 
 fn make_transport(addr: &str) -> Result<Transport, SecretError> {
+    // Unix domain socket: any path starting with '/'.
     if addr.starts_with('/') {
         return Ok(Transport::Uds {
             path: addr.to_owned(),
         });
     }
+
+    // IPv6 bracket notation: [::1]:8080 → ip="::1", port=8080.
+    // The brackets are stripped because wolfhsm's TCP connect expects a bare
+    // IP address, not URL-style bracket notation.
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some((host, port_str)) = rest.split_once("]:") {
+            let port: u16 = port_str.parse().map_err(|_| {
+                SecretError::InvalidUri(format!(
+                    "wolfhsm server `{addr}`: port `{port_str}` is not a valid u16"
+                ))
+            })?;
+            return Ok(Transport::Tcp {
+                ip: host.to_owned(),
+                port,
+            });
+        }
+        return Err(SecretError::InvalidUri(format!(
+            "wolfhsm server `{addr}`: malformed IPv6 bracket address; expected `[<ip>]:<port>`"
+        )));
+    }
+
+    // IPv4 / hostname: host:port.
     if let Some((host, port_str)) = addr.rsplit_once(':') {
         let port: u16 = port_str.parse().map_err(|_| {
             SecretError::InvalidUri(format!(
@@ -174,8 +230,10 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
             port,
         });
     }
+
     Err(SecretError::InvalidUri(format!(
-        "wolfhsm server `{addr}` must be `host:port` (TCP) or `/path` (UDS)"
+        "wolfhsm server `{addr}` must be `host:port` (TCP), `[<ip>]:<port>` (IPv6 TCP), \
+         or `/path` (UDS)"
     )))
 }
 
@@ -186,17 +244,19 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
 fn ensure_connected<'a>(
     state: &'a mut WolfHsmState,
     server: &str,
+    client_id: u8,
 ) -> Result<&'a mut Client, SecretError> {
     if state.client.is_none() {
         let addr = resolve_server(server)?;
         let transport = make_transport(&addr)?;
-        let client = Client::connect(transport, 1).map_err(|e| SecretError::Unavailable {
-            backend: BACKEND,
-            source: Box::new(e),
-        })?;
+        let client =
+            Client::connect(transport, client_id).map_err(|e| SecretError::Unavailable {
+                backend: BACKEND,
+                source: Box::new(e),
+            })?;
         state.client = Some(client);
     }
-    Ok(state.client.as_mut().unwrap())
+    Ok(state.connected_client())
 }
 
 // ── NVM scan helpers ──────────────────────────────────────────────────────────
@@ -206,6 +266,10 @@ fn ensure_connected<'a>(
 /// Returns the first matching [`NvmId`], or `None` if not found.
 /// `WH_ERROR_NOTFOUND` from `nvm_metadata` is treated as a stale list entry
 /// and skipped rather than propagated.
+///
+/// # Panics
+///
+/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
 fn find_by_label(client: &mut Client, label: &str) -> Result<Option<NvmId>, SecretError> {
     let ids = client.nvm_list().map_err(backend_err)?;
     for id in ids {
@@ -225,6 +289,9 @@ fn find_by_label(client: &mut Client, label: &str) -> Result<Option<NvmId>, Secr
 /// Find the first NVM ID in `1..=u16::MAX` not currently in use.
 ///
 /// Used when creating a brand-new NVM object (no existing ID to reuse).
+///
+/// ID 0 is excluded: `WH_KEYID_ERASED = 0x0000` (wolfhsm/wh_keyid.h:38) is
+/// the sentinel "no ID" value and cannot be used for real objects.
 fn find_free_id(client: &mut Client) -> Result<NvmId, SecretError> {
     let used: HashSet<u16> = client
         .nvm_list()
@@ -243,32 +310,48 @@ fn find_free_id(client: &mut Client) -> Result<NvmId, SecretError> {
     })
 }
 
-/// Return the NVM ID for `label`, using `state.cached_nvm_id` when valid.
+/// Find the NVM ID for `label`, using the cache when valid.
 ///
-/// Validates the cached ID before returning it (stale after NVM delete/recreate).
-/// Falls back to a full label scan if the cache misses or is stale.
-fn get_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<NvmId, SecretError> {
+/// Returns `Ok(Some(id))` if the object exists (from cache or full scan),
+/// `Ok(None)` if not present in NVM.  Updates `state.cached_nvm_id` on hit;
+/// clears it on cache miss.
+///
+/// # Panics
+///
+/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
+fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<Option<NvmId>, SecretError> {
+    // Validate cache before trusting it: another client may have deleted and
+    // recreated the object under a different NVM ID.
     if let Some(cached) = state.cached_nvm_id {
         let still_valid = {
-            let client = state.client.as_mut().unwrap();
-            match client.nvm_metadata(cached) {
+            match state.connected_client().nvm_metadata(cached) {
                 Ok(meta) => meta.label_str() == Some(label),
                 Err(wolfhsm::Error::Wh { code }) if code == WH_ERROR_NOTFOUND => false,
                 Err(e) => return Err(backend_err(e)),
             }
         };
         if still_valid {
-            return Ok(cached);
+            return Ok(Some(cached));
         }
         state.cached_nvm_id = None;
     }
 
-    let id = {
-        let client = state.client.as_mut().unwrap();
-        find_by_label(client, label)?.ok_or(SecretError::NotFound)?
-    };
-    state.cached_nvm_id = Some(id);
+    let id = find_by_label(state.connected_client(), label)?;
+    if let Some(id) = id {
+        state.cached_nvm_id = Some(id);
+    }
     Ok(id)
+}
+
+/// Return the NVM ID for `label`, returning [`SecretError::NotFound`] if absent.
+///
+/// Thin wrapper over [`find_cached_or_scan`].
+///
+/// # Panics
+///
+/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
+fn get_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<NvmId, SecretError> {
+    find_cached_or_scan(state, label)?.ok_or(SecretError::NotFound)
 }
 
 // ── SecretStore ───────────────────────────────────────────────────────────────
@@ -279,15 +362,13 @@ impl SecretStore for WolfHsmBackend {
         let state_arc = Arc::clone(&self.state);
         let label = self.label.clone();
         let server = self.server.clone();
+        let client_id = self.client_id;
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server)?;
+            ensure_connected(&mut guard, &server, client_id)?;
             let id = get_cached_or_scan(&mut guard, &label)?;
-            let bytes = {
-                let client = guard.client.as_mut().unwrap();
-                client.nvm_read(id, 0).map_err(backend_err)?
-            };
+            let bytes = guard.connected_client().nvm_read(id, 0).map_err(backend_err)?;
             Ok(SecretValue::new(bytes))
         })
         .await
@@ -311,40 +392,31 @@ impl WritableSecretStore for WolfHsmBackend {
         let state_arc = Arc::clone(&self.state);
         let label = self.label.clone();
         let server = self.server.clone();
+        let client_id = self.client_id;
         let bytes = value.into_bytes();
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server)?;
+            ensure_connected(&mut guard, &server, client_id)?;
 
-            let maybe_id = {
-                let client = guard.client.as_mut().unwrap();
-                find_by_label(client, &label)?
-            };
+            let maybe_id = find_cached_or_scan(&mut guard, &label)?;
 
             match maybe_id {
                 Some(id) => {
                     // Overwrite: wolfhsm deletes then re-adds at the same ID.
-                    {
-                        let client = guard.client.as_mut().unwrap();
-                        client
-                            .nvm_overwrite(id, 0, 0, &label, bytes.as_ref())
-                            .map_err(backend_err)?;
-                    }
+                    guard
+                        .connected_client()
+                        .nvm_overwrite(id, 0, 0, &label, bytes.as_ref())
+                        .map_err(backend_err)?;
                     guard.cached_nvm_id = Some(id);
                 }
                 None => {
                     // New object: find a free NVM ID.
-                    let free_id = {
-                        let client = guard.client.as_mut().unwrap();
-                        find_free_id(client)?
-                    };
-                    {
-                        let client = guard.client.as_mut().unwrap();
-                        client
-                            .nvm_add(free_id, 0, 0, &label, bytes.as_ref())
-                            .map_err(backend_err)?;
-                    }
+                    let free_id = find_free_id(guard.connected_client())?;
+                    guard
+                        .connected_client()
+                        .nvm_add(free_id, 0, 0, &label, bytes.as_ref())
+                        .map_err(backend_err)?;
                     guard.cached_nvm_id = Some(free_id);
                 }
             }
@@ -377,8 +449,8 @@ fn signing_unavailable(label: &str) -> SecretError {
         backend: BACKEND,
         source: format!(
             "wolfHSM SigningBackend not yet implemented (label: {label}): \
-             the wolfhsm 0.1.0 crate does not expose an API to load a \
-             persistent NVM key by label; waiting for EccP256Key::load_from_nvm"
+             the wolfhsm crate does not yet expose EccP256Key::load_from_nvm; \
+             signing will be implemented once that API is available"
         )
         .into(),
     }
@@ -422,6 +494,7 @@ mod tests {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key").unwrap();
         assert_eq!(b.label, "my-key");
         assert_eq!(b.server, "");
+        assert_eq!(b.client_id, 1);
     }
 
     #[test]
@@ -430,6 +503,21 @@ mod tests {
             WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=127.0.0.1:8080").unwrap();
         assert_eq!(b.label, "my-key");
         assert_eq!(b.server, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn from_uri_with_client_id_param() {
+        let b =
+            WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?client_id=7").unwrap();
+        assert_eq!(b.client_id, 7);
+    }
+
+    #[test]
+    fn from_uri_client_id_out_of_range() {
+        assert!(matches!(
+            WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?client_id=256"),
+            Err(SecretError::InvalidUri(_))
+        ));
     }
 
     #[test]
@@ -474,6 +562,72 @@ mod tests {
             Err(SecretError::InvalidUri(_))
         ));
     }
+
+    // ── make_transport ────────────────────────────────────────────────────────
+
+    #[test]
+    fn transport_uds() {
+        let t = make_transport("/run/wolfhsm.sock").unwrap();
+        assert!(matches!(t, Transport::Uds { path } if path == "/run/wolfhsm.sock"));
+    }
+
+    #[test]
+    fn transport_tcp_ipv4() {
+        let t = make_transport("127.0.0.1:8080").unwrap();
+        assert!(matches!(t, Transport::Tcp { ip, port } if ip == "127.0.0.1" && port == 8080));
+    }
+
+    #[test]
+    fn transport_tcp_hostname() {
+        let t = make_transport("myhost:1234").unwrap();
+        assert!(matches!(t, Transport::Tcp { ip, port } if ip == "myhost" && port == 1234));
+    }
+
+    #[test]
+    fn transport_tcp_ipv6_bracket() {
+        let t = make_transport("[::1]:8080").unwrap();
+        assert!(matches!(t, Transport::Tcp { ip, port } if ip == "::1" && port == 8080));
+    }
+
+    #[test]
+    fn transport_tcp_ipv6_full_bracket() {
+        let t = make_transport("[2001:db8::1]:443").unwrap();
+        assert!(matches!(t, Transport::Tcp { ip, port } if ip == "2001:db8::1" && port == 443));
+    }
+
+    #[test]
+    fn transport_invalid_no_port() {
+        assert!(matches!(
+            make_transport("localhostonly"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn transport_invalid_port_not_u16() {
+        assert!(matches!(
+            make_transport("host:notaport"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn transport_invalid_port_overflow() {
+        assert!(matches!(
+            make_transport("host:65536"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn transport_invalid_ipv6_malformed() {
+        assert!(matches!(
+            make_transport("[::1]"),       // missing port
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    // ── SecretStore / SigningBackend (no server) ──────────────────────────────
 
     #[tokio::test]
     async fn get_no_server_returns_unavailable() {
