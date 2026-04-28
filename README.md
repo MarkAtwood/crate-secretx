@@ -245,7 +245,7 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `gcp-sm` | ✅ real GCP | tested against GCP Secret Manager; get/put/refresh + CRC32C integrity |
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
-| `keyring` | ❌ headless fails | requires desktop keyring daemon; `put` succeeds but `get` returns `NotFound` on a headless server |
+| `keyring` | ✅ gnome-keyring headless | Linux headless via `dbus-run-session` + `gnome-keyring-daemon`; macOS and Windows not yet tested |
 | `wolfhsm` | ⚠️ unit tests only | requires wolfHSM server or simulator; set `WOLFHSM_SERVER` |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.

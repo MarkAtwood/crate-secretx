@@ -4,11 +4,16 @@
 //!
 //! Unit tests (URI parsing, error mapping) pass without a keyring daemon.
 //! The integration test (`SECRETX_KEYRING_INTEGRATION_TESTS=1`) requires a
-//! running desktop keyring daemon (macOS Keychain, Windows Credential Manager,
-//! or `gnome-keyring-daemon` / KWallet on Linux). On a headless Linux server
-//! `put` succeeds but `get` returns `NotFound` — **do not run in CI without
-//! a keyring daemon**.
-//! **Integration-tested on: macOS, Windows (not yet). Linux desktop: not yet.**
+//! running secret-service provider. On a headless Linux server, start one with:
+//!
+//! ```sh
+//! dbus-run-session -- bash -c \
+//!   'eval $(echo "" | gnome-keyring-daemon --unlock --components=secrets) && \
+//!    SECRETX_KEYRING_INTEGRATION_TESTS=1 cargo test -p secretx-keyring'
+//! ```
+//!
+//! **Integration-tested 2026-04-28**: Linux headless (gnome-keyring-daemon via
+//! dbus-run-session); macOS and Windows not yet tested.
 //!
 //! URI: `secretx:keyring:<service>/<account>`
 //!
@@ -64,14 +69,12 @@ impl KeyringBackend {
             )));
         }
         // path must be "<service>/<account>" — split on the first '/'.
-        let Some(sep) = parsed.path().find('/') else {
-            return Err(SecretError::InvalidUri(
+        // account may itself contain slashes (e.g. "svc/user/sub").
+        let (service, account) = parsed.path().split_once('/').ok_or_else(|| {
+            SecretError::InvalidUri(
                 "keyring URI requires `secretx:keyring:<service>/<account>`".into(),
-            ));
-        };
-        let path = parsed.path();
-        let service = &path[..sep];
-        let account = &path[sep + 1..];
+            )
+        })?;
         if service.is_empty() {
             return Err(SecretError::InvalidUri(
                 "keyring URI: service name must not be empty".into(),
@@ -268,12 +271,12 @@ mod tests {
     // ── Integration tests (require OS keychain) ───────────────────────────────
     //
     // Gated behind SECRETX_KEYRING_INTEGRATION_TESTS=1.  On headless Linux
-    // systems the keychain daemon may not be running; NoStorageAccess and
-    // similar are treated as a graceful skip rather than a failure.
+    // use dbus-run-session + gnome-keyring-daemon --unlock; see module doc.
 
-    /// Returns true if the error is a transient keyring unavailability — which
-    /// happens on headless servers without a keyring daemon.
-    fn is_no_storage(e: &SecretError) -> bool {
+    /// Returns true if the error signals that no keyring daemon is available.
+    /// Matches any `Unavailable` variant — on Linux this covers NoStorageAccess
+    /// (no daemon running) and D-Bus connection errors.
+    fn is_no_keyring_daemon(e: &SecretError) -> bool {
         matches!(e, SecretError::Unavailable { .. })
     }
 
@@ -300,7 +303,7 @@ mod tests {
             .await;
         match put_result {
             Ok(()) => {}
-            Err(ref e) if is_no_storage(e) => {
+            Err(ref e) if is_no_keyring_daemon(e) => {
                 eprintln!("keyring: no storage available, skipping integration test");
                 return;
             }
