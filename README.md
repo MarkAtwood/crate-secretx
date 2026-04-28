@@ -195,6 +195,24 @@ dispatch functions. Backend crates have no compile-time feature guards.
 
 ---
 
+## Planned backends
+
+The following backends are designed and documented but not yet implemented. Each has a stub
+README in its crate directory. Contributions welcome; see the roadmap issues in the issue tracker.
+
+| Crate | URI scheme | Notes |
+|-------|-----------|-------|
+| `secretx-alibaba-sm` | `secretx:alibaba-sm:<region>/<secret-name>` | Alibaba Cloud KMS Secrets Manager; OSCCA SM4 available for China-region deployments |
+| `secretx-barbican` | `secretx:barbican:<secret-uuid>` | OpenStack Barbican; covers OVHcloud, Open Telekom Cloud, Cleura, STACKIT, VK Cloud, and any OpenStack operator |
+| `secretx-huawei-csms` | `secretx:huawei-csms:<region>/<secret-name>` | Huawei Cloud CSMS (DEW umbrella); OSCCA SM4 available for China-region deployments |
+| `secretx-ibm-sm` | `secretx:ibm-sm:<region>/<instance-id>/<secret-id>` | IBM Cloud Secrets Manager (Vault Enterprise under the hood); for IBM HPCS HSM use `secretx-pkcs11` |
+| `secretx-oci-vault` | `secretx:oci-vault:<compartment-id>/<secret-name>` | OCI Vault; also `SigningBackend` for HSM-backed keys |
+| `secretx-scaleway-sm` | `secretx:scaleway-sm:<project-id>/<secret-name>` | Scaleway Secret Manager |
+| `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
+| `secretx-yandex-lockbox` | `secretx:yandex-lockbox:<secret-id>` | Yandex Cloud Lockbox; Kubernetes ESO provider exists |
+
+---
+
 ## Security guarantees
 
 1. **`SecretValue` memory is zeroed on drop.** `Zeroizing<Vec<u8>>` ensures this. Backends never
