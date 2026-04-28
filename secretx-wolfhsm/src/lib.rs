@@ -15,10 +15,13 @@
 //!
 //! # Transport
 //!
-//! The server address is parsed at first use, not at `from_uri` construction
-//! time. If neither `?server=` nor `WOLFHSM_SERVER` is set when `get()`,
-//! `refresh()`, or `put()` is called, the call returns
-//! [`SecretError::Unavailable`].
+//! The `?server=` address is validated (syntax only, no connection) at
+//! [`from_uri`](WolfHsmBackend::from_uri) construction time and returns
+//! [`SecretError::InvalidUri`] on failure.
+//!
+//! `WOLFHSM_SERVER` is resolved and validated at first use (`get()`,
+//! `refresh()`, or `put()`). If neither source is set at that point, the call
+//! returns [`SecretError::Unavailable`].
 //!
 //! # SecretStore and WritableSecretStore
 //!
