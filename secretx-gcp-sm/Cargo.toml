@@ -18,6 +18,7 @@ inventory = { workspace = true }
 reqwest = { workspace = true }
 zeroize = { workspace = true }
 base64 = { workspace = true }
+crc32c = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

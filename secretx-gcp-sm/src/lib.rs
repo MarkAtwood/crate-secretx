@@ -5,7 +5,7 @@
 //! Unit tests (URI parsing, error mapping) pass without credentials.
 //! Live integration tests require a GCP project with the Secret Manager API
 //! enabled. Set `SECRETX_GCP_TEST=1` and `GCP_ACCESS_TOKEN` to enable them.
-//! **Not yet integration-tested.**
+//! Integration-tested 2026-04-28 against GCP Secret Manager (all 3 live tests pass).
 //!
 //! URI: `secretx:gcp-sm:<project>/<secret>[?version=<version>]`
 //!
@@ -74,6 +74,14 @@ use zeroize::Zeroizing;
 const BACKEND: &str = "gcp-sm";
 const BASE_URL: &str = "https://secretmanager.googleapis.com/v1";
 
+/// Which version of a secret to read.
+enum SecretVersion {
+    /// Track the latest version (default when `?version=` is absent or `latest`).
+    Latest,
+    /// Read a specific pinned version (e.g. `?version=3`).
+    Pinned(String),
+}
+
 /// Backend that reads and writes secrets in GCP Secret Manager via REST.
 ///
 /// Construct with [`from_uri`](GcpSmBackend::from_uri). Reads the GCP access
@@ -99,7 +107,7 @@ pub struct GcpSmBackend {
     client: reqwest::Client,
     project: String,
     secret: String,
-    version: String,
+    version: SecretVersion,
     access_token: Zeroizing<String>,
 }
 
@@ -126,11 +134,16 @@ impl GcpSmBackend {
             SecretError::InvalidUri("gcp-sm URI must be secretx:gcp-sm:<project>/<secret>".into())
         })?;
 
-        let version = parsed.param("version").unwrap_or("latest").to_string();
+        let version = match parsed.param("version") {
+            None | Some("latest") => SecretVersion::Latest,
+            Some(v) => {
+                validate_gcp_resource_name_component(v, "version")?;
+                SecretVersion::Pinned(v.to_string())
+            }
+        };
 
         validate_gcp_resource_name_component(&project, "project")?;
         validate_gcp_resource_name_component(&secret, "secret")?;
-        validate_gcp_resource_name_component(&version, "version")?;
 
         let access_token =
             std::env::var("GCP_ACCESS_TOKEN").map_err(|_| SecretError::Unavailable {
@@ -148,18 +161,20 @@ impl GcpSmBackend {
     }
 }
 
+/// Return the version string for the REST URL.
+fn version_str(v: &SecretVersion) -> &str {
+    match v {
+        SecretVersion::Latest => "latest",
+        SecretVersion::Pinned(s) => s.as_str(),
+    }
+}
+
 /// Split `"<project>/<secret>"` into `(project, secret)`.
 ///
 /// Returns `None` if either component is empty.
 fn split_project_secret(path: &str) -> Option<(String, String)> {
-    let slash = path.find('/')?;
-    let project = &path[..slash];
-    let secret = &path[slash + 1..];
-    if project.is_empty() || secret.is_empty() {
-        return None;
-    }
-    // secret must not contain a '/' (only one slash allowed in path)
-    if secret.contains('/') {
+    let (project, secret) = path.split_once('/')?;
+    if project.is_empty() || secret.is_empty() || secret.contains('/') {
         return None;
     }
     Some((project.to_string(), secret.to_string()))
@@ -241,7 +256,7 @@ fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
 #[async_trait::async_trait]
 impl SecretStore for GcpSmBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
-        let url = access_url(&self.project, &self.secret, &self.version);
+        let url = access_url(&self.project, &self.secret, version_str(&self.version));
         let resp = self
             .client
             .get(&url)
@@ -284,6 +299,27 @@ impl SecretStore for GcpSmBackend {
         let data = base64::engine::general_purpose::STANDARD
             .decode(data_b64)
             .map_err(|e| SecretError::DecodeFailed(format!("gcp-sm: base64 decode: {e}")))?;
+
+        // Verify CRC32C integrity if the field is present in the response.
+        // GCP SM encodes dataCrc32c as a JSON string (proto3 int64 → string to
+        // preserve precision in JavaScript), so we parse it as i64 then cast to u32.
+        if let Some(crc_str) = json
+            .get("payload")
+            .and_then(|p| p.get("dataCrc32c"))
+            .and_then(|c| c.as_str())
+        {
+            let expected = crc_str.parse::<i64>().map(|n| n as u32).map_err(|e| {
+                SecretError::DecodeFailed(format!("gcp-sm: invalid dataCrc32c value: {e}"))
+            })?;
+            let computed = crc32c::crc32c(&data);
+            if computed != expected {
+                return Err(SecretError::DecodeFailed(format!(
+                    "gcp-sm: CRC32C integrity check failed (expected {expected:#010x}, \
+                     computed {computed:#010x}); secret data may be corrupted"
+                )));
+            }
+        }
+
         Ok(SecretValue::new(data))
     }
 
@@ -311,7 +347,7 @@ impl WritableSecretStore for GcpSmBackend {
         // which would continue reading the pinned version.  That silently
         // violates the WritableSecretStore contract.  Reject early so callers
         // discover the misconfiguration immediately.
-        if self.version != "latest" {
+        if matches!(self.version, SecretVersion::Pinned(_)) {
             return Err(SecretError::InvalidUri(
                 "gcp-sm: put() requires a URI without a pinned ?version= (omit ?version= or \
                  use ?version=latest); GCP Secret Manager always creates a new version and \
@@ -532,10 +568,16 @@ mod tests {
         // get() (which reads self.version) can never see — WritableSecretStore
         // contract violation.  The guard fires before any network call.
         // Use a dummy token so from_uri succeeds; no network is contacted.
+        // SAFETY: ENV_LOCK is held for the duration of this test.  The only
+        // other test that reads GCP_ACCESS_TOKEN in from_uri is
+        // from_uri_missing_token, which also acquires ENV_LOCK.  All other
+        // from_uri_* tests return before the token check.  No concurrent env
+        // mutation can occur while ENV_LOCK is held.
         unsafe { std::env::set_var("GCP_ACCESS_TOKEN", "dummy-token") };
         let store =
             GcpSmBackend::from_uri("secretx:gcp-sm:my-project/my-secret?version=3").unwrap();
         let result = store.put(SecretValue::new(b"value".to_vec())).await;
+        // SAFETY: same guarantee as the set_var call above.
         unsafe { std::env::remove_var("GCP_ACCESS_TOKEN") };
         match result {
             Err(SecretError::InvalidUri(msg)) => {
@@ -558,8 +600,10 @@ mod tests {
         {
             return;
         }
-        let project = std::env::var("GCP_PROJECT").unwrap_or_else(|_| "my-project".into());
-        let secret = std::env::var("GCP_SECRET_NAME").unwrap_or_else(|_| "my-secret".into());
+        let project = std::env::var("GCP_PROJECT")
+            .expect("set GCP_PROJECT to the GCP project ID when SECRETX_GCP_TEST=1");
+        let secret = std::env::var("GCP_SECRET_NAME")
+            .expect("set GCP_SECRET_NAME to the secret name when SECRETX_GCP_TEST=1");
         let uri = format!("secretx:gcp-sm:{project}/{secret}");
         let store = GcpSmBackend::from_uri(&uri).unwrap();
         let value = store.get().await.unwrap();
@@ -572,8 +616,10 @@ mod tests {
         {
             return;
         }
-        let project = std::env::var("GCP_PROJECT").unwrap_or_else(|_| "my-project".into());
-        let secret = std::env::var("GCP_SECRET_NAME").unwrap_or_else(|_| "my-secret".into());
+        let project = std::env::var("GCP_PROJECT")
+            .expect("set GCP_PROJECT to the GCP project ID when SECRETX_GCP_TEST=1");
+        let secret = std::env::var("GCP_SECRET_NAME")
+            .expect("set GCP_SECRET_NAME to the secret name when SECRETX_GCP_TEST=1");
         let uri = format!("secretx:gcp-sm:{project}/{secret}");
         let store = GcpSmBackend::from_uri(&uri).unwrap();
         let value = store.refresh().await.unwrap();
@@ -586,8 +632,10 @@ mod tests {
         {
             return;
         }
-        let project = std::env::var("GCP_PROJECT").unwrap_or_else(|_| "my-project".into());
-        let secret = std::env::var("GCP_SECRET_NAME").unwrap_or_else(|_| "my-secret".into());
+        let project = std::env::var("GCP_PROJECT")
+            .expect("set GCP_PROJECT to the GCP project ID when SECRETX_GCP_TEST=1");
+        let secret = std::env::var("GCP_SECRET_NAME")
+            .expect("set GCP_SECRET_NAME to the secret name when SECRETX_GCP_TEST=1");
         let uri = format!("secretx:gcp-sm:{project}/{secret}?version=1");
         let store = GcpSmBackend::from_uri(&uri).unwrap();
         let value = store.get().await.unwrap();
@@ -628,5 +676,13 @@ mod tests {
             matches!(err, SecretError::Unavailable { .. }),
             "HTTP 429 must map to Unavailable, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn crc32c_rfc_test_vector() {
+        // RFC 3720 §B.4 standard vector: CRC32C("123456789") = 0xE3069283.
+        // Verified independently with Python crcmod:
+        //   crcmod.predefined.mkCrcFun('crc-32c')(b"123456789") == 0xE3069283
+        assert_eq!(crc32c::crc32c(b"123456789"), 0xE3069283_u32);
     }
 }
