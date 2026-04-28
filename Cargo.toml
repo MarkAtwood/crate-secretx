@@ -40,7 +40,7 @@ secretx-env = { path = "secretx-env", version = "0.3.0" }
 secretx-file = { path = "secretx-file", version = "0.3.0" }
 secretx-gcp-sm = { path = "secretx-gcp-sm", version = "0.3.1" }
 secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.3.0" }
-secretx-keyring = { path = "secretx-keyring", version = "0.3.0" }
+secretx-keyring = { path = "secretx-keyring", version = "0.3.1" }
 secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.3.0" }
 secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.3.1" }
 async-trait = "0.1"
