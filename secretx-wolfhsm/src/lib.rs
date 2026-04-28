@@ -133,6 +133,12 @@ impl WolfHsmBackend {
             ));
         }
         let server = parsed.param("server").unwrap_or("").to_owned();
+        // Validate the ?server= address at construction time (pure parsing, no
+        // I/O). WOLFHSM_SERVER from the environment is validated lazily at
+        // first use because it is not known until then.
+        if !server.is_empty() {
+            make_transport(&server)?;
+        }
         let client_id: u8 = match parsed.param("client_id") {
             None => 1,
             Some(s) => s.parse().map_err(|_| {
@@ -604,6 +610,16 @@ mod tests {
         let uri = "secretx:wolfhsm:aaaaaaaaaaaaaaaaaaaaaaaa";
         assert_eq!(uri.len() - "secretx:wolfhsm:".len(), 24);
         WolfHsmBackend::from_uri(uri).unwrap();
+    }
+
+    #[test]
+    fn from_uri_server_param_invalid_port_rejected_at_construction() {
+        // ?server= is validated eagerly at from_uri() — not lazily at get().
+        // Port > 32767 must be caught here, not at runtime.
+        assert!(matches!(
+            WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=host:40000"),
+            Err(SecretError::InvalidUri(_))
+        ));
     }
 
     #[test]
