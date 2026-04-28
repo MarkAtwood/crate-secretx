@@ -58,6 +58,8 @@ use secretx_aws_ssm as _;
 use secretx_azure_kv as _;
 #[cfg(feature = "bitwarden")]
 use secretx_bitwarden as _;
+#[cfg(feature = "desktop")]
+use secretx_desktop as _;
 #[cfg(feature = "doppler")]
 use secretx_doppler as _;
 #[cfg(feature = "env")]
@@ -74,6 +76,8 @@ use secretx_keyring as _;
 use secretx_local_signing as _;
 #[cfg(feature = "pkcs11")]
 use secretx_pkcs11 as _;
+#[cfg(feature = "systemd")]
+use secretx_systemd as _;
 #[cfg(feature = "wolfhsm")]
 use secretx_wolfhsm as _;
 

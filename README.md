@@ -70,6 +70,8 @@ secretx:<backend>:<path>[?options]
 | `secretx:doppler:myproject/prd/MY_SECRET` | Doppler | auth via `DOPPLER_TOKEN` |
 | `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
 | `secretx:keyring:myapp/my-key` | Linux kernel keyring | no daemon; Linux only |
+| `secretx:desktop:myapp/my-key` | Desktop keychain | macOS Keychain, GNOME Keyring, Windows Credential Manager |
+| `secretx:systemd:<name>` | systemd credentials | `$CREDENTIALS_DIRECTORY`; TPM2-encrypted at rest; requires systemd v250+ |
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB` env var |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
@@ -93,8 +95,8 @@ secretx = { version = "0.3", features = ["aws-sm", "file"] }
 ```
 
 Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
-`cache`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`, `keyring`,
-`local-signing`, `pkcs11`, `wolfhsm`.
+`cache`, `desktop`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`,
+`keyring`, `local-signing`, `pkcs11`, `systemd`, `wolfhsm`.
 
 ```rust
 use secretx::{SecretStore, SecretValue};
@@ -184,6 +186,8 @@ dispatch functions. Backend crates have no compile-time feature guards.
 | `secretx-gcp-sm` | GCP Secret Manager backend |
 | `secretx-hashicorp-vault` | HashiCorp Vault backend |
 | `secretx-keyring` | Linux kernel keyring backend |
+| `secretx-desktop` | Desktop keychain backend (macOS Keychain, GNOME Keyring, Windows Credential Manager) |
+| `secretx-systemd` | systemd credentials backend (`$CREDENTIALS_DIRECTORY`) |
 | `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
@@ -247,6 +251,8 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
 | `keyring` | ✅ kernel keyring headless | Linux only; kernel persistent keyring, no daemon required |
+| `desktop` | ⚠️ unit tests only | needs desktop session; macOS/Windows not yet tested |
+| `systemd` | ⚠️ unit tests only | needs systemd v250+ service environment |
 | `wolfhsm` | ⚠️ unit tests only | requires wolfHSM server or simulator; set `WOLFHSM_SERVER` |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.

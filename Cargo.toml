@@ -16,6 +16,8 @@ members = [
     "secretx-local-signing",
     "secretx-pkcs11",
     "secretx-wolfhsm",
+    "secretx-systemd",
+    "secretx-desktop",
     "secretx",
 ]
 resolver = "2"
@@ -43,12 +45,13 @@ secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.3.0" 
 secretx-keyring = { path = "secretx-keyring", version = "0.3.1" }
 secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.3.0" }
 secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.3.1" }
+secretx-systemd = { path = "secretx-systemd", version = "0.3.0" }
+secretx-desktop = { path = "secretx-desktop", version = "0.3.0" }
 async-trait = "0.1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-kms = "1"
 aws-sdk-secretsmanager = "1"
 aws-sdk-ssm = "1"
-keyring = { version = "3", features = ["linux-native", "crypto-rust"] }
 reqwest = { version = "0.13", features = ["json"] }
 vaultrs = "0.8"
 bitwarden = "2"
