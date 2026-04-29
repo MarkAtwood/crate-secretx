@@ -2,8 +2,6 @@
 
 Kubernetes Secret backend for [secretx](https://crates.io/crates/secretx).
 
-> **Status: Planned.** This crate does not exist yet. See the roadmap issue for implementation status.
-
 ## URI
 
 ```text
@@ -16,8 +14,22 @@ secretx:k8s:<namespace>/<secret-name>[?key=<data-key>]
   than one key
 
 Without `?key=`, `get` succeeds only if the Secret contains exactly one key and returns that
-key's value. For multi-key Secrets, `?key=` is required and `from_uri` will return
-`SecretError::InvalidUri` if it is absent.
+key's value. For Secrets with more than one key, `?key=<name>` is required; `get` returns
+`SecretError::InvalidUri` at read time if it is absent.
+
+## Write behaviour (`put`)
+
+`put` uses two strategies depending on whether `?key=` is present:
+
+- **With `?key=`** (e.g. `secretx:k8s:prod/db?key=password`): JSON merge-patch.
+  Adds or updates the named key; all other keys in the Secret are preserved.
+  If the Secret does not exist it is created.
+
+- **Without `?key=`**: Server-side apply (SSA) with field manager `secretx-k8s`.
+  The value is stored under the literal key name `"value"` (i.e. `.data.value`).
+  SSA is an atomic create-or-update: you do not need a pre-existing Secret, and
+  no `resourceVersion` is required.  Keys owned by other field managers are left
+  untouched.
 
 ## Auth
 

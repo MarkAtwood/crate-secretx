@@ -2,9 +2,12 @@
 //!
 //! URI: `secretx:k8s:<namespace>/<secret-name>[?key=<data-key>]`
 
-use k8s_openapi::api::core::v1::Secret as K8sSecret;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::{api::core::v1::Secret as K8sSecret, ByteString};
+use kube::api::{Patch, PatchParams, PostParams};
 use kube::Api;
 use secretx_core::{SecretError, SecretUri};
+use std::collections::BTreeMap;
 
 const BACKEND: &str = "k8s";
 
@@ -105,16 +108,7 @@ impl secretx_core::SecretStore for K8sBackend {
 
         let api: Api<K8sSecret> = Api::namespaced(client, &self.namespace);
 
-        let secret = api.get_opt(&self.name).await.map_err(|e| match &e {
-            kube::Error::Api(s) if s.is_forbidden() => SecretError::Unavailable {
-                backend: BACKEND,
-                source: Box::new(e),
-            },
-            _ => SecretError::Backend {
-                backend: BACKEND,
-                source: Box::new(e),
-            },
-        })?;
+        let secret = api.get_opt(&self.name).await.map_err(map_kube_error)?;
 
         let secret = secret.ok_or(SecretError::NotFound)?;
         let data = secret.data.ok_or(SecretError::NotFound)?;
@@ -126,7 +120,11 @@ impl secretx_core::SecretStore for K8sBackend {
             match data.len() {
                 0 => Err(SecretError::NotFound),
                 1 => {
-                    let (_, bs) = data.into_iter().next().unwrap(); // len==1 proven above
+                    // len==1 is proven by the match arm above; into_values() skips the key.
+                    let bs = data
+                        .into_values()
+                        .next()
+                        .expect("len==1 guarantees one entry");
                     Ok(secretx_core::SecretValue::new(bs.0))
                 }
                 _ => Err(SecretError::InvalidUri(
@@ -143,10 +141,6 @@ impl secretx_core::SecretStore for K8sBackend {
 #[async_trait::async_trait]
 impl secretx_core::WritableSecretStore for K8sBackend {
     async fn put(&self, value: secretx_core::SecretValue) -> Result<(), SecretError> {
-        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-        use kube::api::{Patch, PatchParams, PostParams};
-        use std::collections::BTreeMap;
-
         let client = self
             .client
             .get_or_try_init(|| async {
@@ -161,16 +155,29 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             .clone();
 
         let api: Api<K8sSecret> = Api::namespaced(client, &self.namespace);
+        // When ?key= is absent, store under the literal key name "value".  This is
+        // documented behaviour: a no-key Secret created by secretx-k8s will always
+        // have exactly one entry in .data named "value".
         let key_name = self.key.as_deref().unwrap_or("value");
         let bytes = value.into_bytes();
 
-        let mut data: BTreeMap<String, k8s_openapi::ByteString> = BTreeMap::new();
-        data.insert(key_name.to_owned(), k8s_openapi::ByteString(bytes.to_vec()));
-        // bytes (Zeroizing<Vec<u8>>) drops here — data holds a clone
+        // ZEROIZATION GAP: ByteString wraps a plain Vec<u8> (not Zeroizing).
+        // The copy here is unavoidable — k8s-openapi does not provide a
+        // Zeroizing-compatible ByteString.  The original SecretValue is zeroed
+        // on drop; the copy lives until the HTTP request is serialised and sent.
+        let mut data: BTreeMap<String, ByteString> = BTreeMap::new();
+        data.insert(key_name.to_owned(), ByteString(bytes.to_vec()));
 
         if self.key.is_some() {
-            // JSON merge patch: adds/updates target key, preserves all other keys.
+            // JSON merge patch: adds/updates the target key while preserving all
+            // other keys in the Secret.  We use merge patch (not SSA) here because
+            // per-key writes do not require field-ownership tracking.
             // On 404 (Secret does not exist yet), fall through to create.
+            //
+            // Note: data.clone() is necessary because K8sSecret takes ownership of
+            // the map, but we need data again if the patch returns 404 and we must
+            // fall through to the create path.  Both copies are non-Zeroizing (see
+            // ZEROIZATION GAP above).
             let patch_secret = K8sSecret {
                 data: Some(data.clone()),
                 ..Default::default()
@@ -190,8 +197,14 @@ impl secretx_core::WritableSecretStore for K8sBackend {
                 Err(e) => return Err(map_kube_error(e)),
             }
         } else {
-            // Server-side apply: create-or-update without needing resourceVersion.
-            // secretx-k8s takes ownership of the `value` key in data.
+            // Server-side apply (SSA): create-or-update in a single API call.
+            // SSA gives field manager "secretx-k8s" ownership of the "value" key.
+            // Subsequent no-key puts update "value" in-place; keys owned by other
+            // managers (e.g. set via ?key=) are left untouched by SSA.
+            //
+            // We use SSA here (not merge patch) because SSA is an atomic
+            // create-or-update that does not require knowing the current
+            // resourceVersion, making it safe to call from multiple replicas.
             let apply_secret = K8sSecret {
                 data: Some(data.clone()),
                 ..Default::default()
@@ -206,13 +219,16 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             {
                 Ok(_) => return Ok(()),
                 Err(kube::Error::Api(ref s)) if s.is_not_found() => {
-                    // Should not happen with SSA, but handle defensively
+                    // SSA is supposed to create-or-update; a 404 here would mean
+                    // the API group itself is unavailable rather than the resource
+                    // being absent.  Fall through to an explicit POST as a last resort.
                 }
                 Err(e) => return Err(map_kube_error(e)),
             }
         }
 
-        // Create path: Secret does not exist yet.
+        // Create path: Secret does not exist yet (merge-patch 404) or SSA
+        // unexpectedly returned 404.
         let new_secret = K8sSecret {
             metadata: ObjectMeta {
                 name: Some(self.name.clone()),
@@ -220,7 +236,7 @@ impl secretx_core::WritableSecretStore for K8sBackend {
                 ..Default::default()
             },
             data: Some(data),
-            type_: Some("Opaque".to_string()),
+            type_: Some("Opaque".to_owned()),
             ..Default::default()
         };
         api.create(&PostParams::default(), &new_secret)

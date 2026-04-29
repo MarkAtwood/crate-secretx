@@ -4,11 +4,16 @@
 //! (e.g. a kind cluster). Silently skipped when the env var is absent.
 //!
 //! Run with:
-//!   SECRETX_K8S_KUBECONFIG=~/.kube/kind-config cargo test -p secretx-k8s
+//!   SECRETX_K8S_KUBECONFIG=~/.kube/kind-config cargo test -p secretx-k8s -- --test-threads=1
+//!
+//! The `--test-threads=1` flag is required because this test mutates the KUBECONFIG
+//! environment variable, which is a process-global resource.  Running in a single
+//! thread prevents races with other tests that also call kube::Client::try_default().
 
 use k8s_openapi::api::core::v1::Secret as K8sSecret;
 use kube::api::DeleteParams;
-use kube::{Api, Client};
+use kube::config::{KubeConfigOptions, Kubeconfig};
+use kube::{Api, Client, Config};
 use secretx_core::{SecretError, SecretValue};
 use secretx_k8s::K8sBackend;
 
@@ -22,16 +27,19 @@ fn unique_name(base: &str) -> String {
 
 #[tokio::test]
 async fn k8s_round_trip() {
-    let kubeconfig = match std::env::var("SECRETX_K8S_KUBECONFIG") {
+    let kubeconfig_path = match std::env::var("SECRETX_K8S_KUBECONFIG") {
         Ok(v) => v,
         Err(_) => return, // skip when not configured
     };
 
-    // Point the kube client at the test cluster.
-    // SAFETY: single-threaded tokio test; no concurrent threads read KUBECONFIG.
+    // Point the kube client at the test cluster by setting KUBECONFIG.
+    // This is a process-global mutation; run with --test-threads=1 (see module doc).
+    // SAFETY: this test requires --test-threads=1, so no other thread reads KUBECONFIG
+    // concurrently.  set_var is unsafe on Rust ≥ 1.81; the allow suppresses the
+    // unused-unsafe lint on earlier toolchains where it is still safe.
     #[allow(unused_unsafe)]
     unsafe {
-        std::env::set_var("KUBECONFIG", &kubeconfig);
+        std::env::set_var("KUBECONFIG", &kubeconfig_path);
     }
 
     let ns = "default";
@@ -125,10 +133,12 @@ async fn k8s_round_trip() {
 
     // ── cleanup (best-effort) ─────────────────────────────────────────────
 
-    let client = Client::try_default()
+    let kc = Kubeconfig::read_from(&kubeconfig_path).expect("read kubeconfig for cleanup");
+    let cfg = Config::from_custom_kubeconfig(kc, &KubeConfigOptions::default())
         .await
-        .expect("kube client for cleanup");
-    let api: Api<K8sSecret> = Api::namespaced(client, ns);
+        .expect("parse kubeconfig for cleanup");
+    let cleanup_client = Client::try_from(cfg).expect("build cleanup client");
+    let api: Api<K8sSecret> = Api::namespaced(cleanup_client, ns);
     let _ = api.delete(&secret_name, &DeleteParams::default()).await;
     let _ = api.delete(&multi_name, &DeleteParams::default()).await;
 }
