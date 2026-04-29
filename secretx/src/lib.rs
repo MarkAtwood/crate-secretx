@@ -70,6 +70,8 @@ use secretx_file as _;
 use secretx_gcp_sm as _;
 #[cfg(feature = "hashicorp-vault")]
 use secretx_hashicorp_vault as _;
+#[cfg(feature = "k8s")]
+use secretx_k8s as _;
 #[cfg(feature = "keyring")]
 use secretx_keyring as _;
 #[cfg(feature = "local-signing")]
@@ -250,6 +252,17 @@ mod tests {
             Err(e) => panic!("expected InvalidUri, got error: {e}"),
             Ok(_) => panic!("expected InvalidUri, got Ok"),
         }
+    }
+
+    #[cfg(feature = "k8s")]
+    #[test]
+    fn from_uri_k8s_dispatches_correctly() {
+        // from_uri is construction-only — no network call. A valid k8s URI must
+        // return Ok(backend), not InvalidUri (which would mean dispatch failed).
+        assert!(
+            from_uri("secretx:k8s:default/my-secret").is_ok(),
+            "k8s URI must dispatch successfully (construction-only, no network)"
+        );
     }
 
     #[cfg(feature = "wolfhsm")]

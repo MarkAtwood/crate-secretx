@@ -1,0 +1,28 @@
+[package]
+name = "secretx-k8s"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Kubernetes Secret backend for secretx."
+readme = "README.md"
+keywords = ["secrets", "security", "kubernetes"]
+categories = ["cryptography", "authentication"]
+repository = "https://github.com/MarkAtwood/crate-secretsx"
+
+[dependencies]
+secretx-core = { workspace = true }
+async-trait = { workspace = true }
+inventory = { workspace = true }
+zeroize = { workspace = true }
+tokio = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+secretx-core = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower-test = "0.4"
+http = "1"

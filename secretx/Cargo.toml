@@ -25,6 +25,7 @@ secretx-env = { workspace = true, optional = true }
 secretx-file = { workspace = true, optional = true }
 secretx-gcp-sm = { workspace = true, optional = true }
 secretx-hashicorp-vault = { workspace = true, optional = true }
+secretx-k8s = { workspace = true, optional = true }
 secretx-keyring = { workspace = true, optional = true }
 secretx-local-signing = { workspace = true, optional = true }
 secretx-pkcs11 = { workspace = true, optional = true }
@@ -45,6 +46,7 @@ env = ["dep:secretx-env"]
 file = ["dep:secretx-file"]
 gcp-sm = ["dep:secretx-gcp-sm"]
 hashicorp-vault = ["dep:secretx-hashicorp-vault"]
+k8s = ["dep:secretx-k8s"]
 keyring = ["dep:secretx-keyring"]
 local-signing = ["dep:secretx-local-signing"]
 pkcs11 = ["dep:secretx-pkcs11"]

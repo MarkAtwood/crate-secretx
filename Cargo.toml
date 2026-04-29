@@ -12,6 +12,7 @@ members = [
     "secretx-file",
     "secretx-gcp-sm",
     "secretx-hashicorp-vault",
+    "secretx-k8s",
     "secretx-keyring",
     "secretx-local-signing",
     "secretx-pkcs11",
@@ -42,6 +43,7 @@ secretx-env = { path = "secretx-env", version = "0.3.0" }
 secretx-file = { path = "secretx-file", version = "0.3.0" }
 secretx-gcp-sm = { path = "secretx-gcp-sm", version = "0.3.1" }
 secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.3.0" }
+secretx-k8s = { path = "secretx-k8s", version = "0.3.0" }
 secretx-keyring = { path = "secretx-keyring", version = "0.3.1" }
 secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.3.0" }
 secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.3.1" }
@@ -67,6 +69,8 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 rsa = { version = "0.9", features = ["sha2", "getrandom"] }
 secretx-local-signing = { path = "secretx-local-signing", version = "0.3.0" }
+k8s-openapi = { version = "0.27", features = ["v1_32"] }
+kube = { version = "3", features = ["client", "config", "rustls-tls"] }
 serde_json = "1"
 sha2 = "0.10"
 signature = "2"
