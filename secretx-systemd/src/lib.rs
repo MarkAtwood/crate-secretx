@@ -67,7 +67,7 @@ impl SystemdCredsBackend {
     /// # Errors
     ///
     /// Returns [`SecretError::InvalidUri`] if the backend is not `systemd`,
-    /// the credential name is empty, or contains `/` (path traversal).
+    /// the credential name is empty, contains `/`, or is `.`/`..` (path traversal).
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != "systemd" {
@@ -82,9 +82,9 @@ impl SystemdCredsBackend {
                 "systemd URI requires a credential name: `secretx:systemd:<name>`".into(),
             ));
         }
-        if name.contains('/') {
+        if name.contains('/') || name == "." || name == ".." {
             return Err(SecretError::InvalidUri(
-                "systemd credential name must not contain `/` (path traversal not allowed)".into(),
+                "systemd credential name must not contain `/` or be `.`/`..` (path traversal not allowed)".into(),
             ));
         }
         Ok(Self {
@@ -173,6 +173,22 @@ mod tests {
     fn from_uri_path_traversal_rejected() {
         assert!(matches!(
             SystemdCredsBackend::from_uri("secretx:systemd:../etc/passwd"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_dot_rejected() {
+        assert!(matches!(
+            SystemdCredsBackend::from_uri("secretx:systemd:."),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_dotdot_rejected() {
+        assert!(matches!(
+            SystemdCredsBackend::from_uri("secretx:systemd:.."),
             Err(SecretError::InvalidUri(_))
         ));
     }

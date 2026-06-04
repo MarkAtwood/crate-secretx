@@ -213,13 +213,12 @@ impl WritableSecretStore for DopplerBackend {
         let body = serde_json::json!({
             "project": self.project,
             "config": self.config,
-            "name": self.name,
-            "value": v,
+            "secrets": { &self.name: v },
         });
 
         let resp = self
             .client
-            .post("https://api.doppler.com/v3/configs/config/secret")
+            .post("https://api.doppler.com/v3/configs/config/secrets")
             .bearer_auth(self.token.as_str())
             .json(&body)
             .send()
