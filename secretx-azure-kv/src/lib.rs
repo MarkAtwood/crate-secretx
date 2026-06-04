@@ -135,13 +135,25 @@ impl AzureKvBackend {
 
 /// Split `"<vault-name>/<secret-name>"` into `(vault_name, secret_name)`.
 ///
-/// Returns `None` if either component is empty or if `secret-name` contains `/`
-/// (Azure Key Vault secret names may not contain slashes).
+/// Returns `None` if either component is empty, if `secret-name` contains `/`
+/// (Azure Key Vault secret names may not contain slashes), or if `vault-name`
+/// contains characters outside `[a-zA-Z0-9-]` (Azure vault names are DNS
+/// labels — allowing other characters would cause URL injection in the
+/// `https://{vault_name}.vault.azure.net` endpoint URL).
 fn split_path(path: &str) -> Option<(String, String)> {
     let slash = path.find('/')?;
     let vault = &path[..slash];
     let secret = &path[slash + 1..];
     if vault.is_empty() || secret.is_empty() || secret.contains('/') {
+        return None;
+    }
+    // Azure vault names must be 3-24 characters, alphanumeric or hyphens.
+    // Rejecting anything else prevents URL injection via the vault name
+    // (e.g. "evil.com/x#" would redirect the HTTPS request to a different host).
+    if !vault
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
         return None;
     }
     Some((vault.to_string(), secret.to_string()))
@@ -469,6 +481,16 @@ mod tests {
     #[test]
     fn split_path_empty_secret() {
         assert!(split_path("my-vault/").is_none());
+    }
+
+    #[test]
+    fn split_path_vault_name_url_injection() {
+        // Vault names must be DNS-safe; special chars would cause URL injection
+        // in the "https://{vault_name}.vault.azure.net" endpoint.
+        assert!(split_path("evil.com/secret").is_none());
+        assert!(split_path("evil#fragment/secret").is_none());
+        assert!(split_path("evil:8080/secret").is_none());
+        assert!(split_path("evil@host/secret").is_none());
     }
 
     // put() field-selector guard — no Azure connection needed.

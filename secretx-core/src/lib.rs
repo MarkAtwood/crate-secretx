@@ -97,6 +97,12 @@ impl SecretValue {
     /// `extract_path(&["data", "data"])` returns a `SecretValue` containing
     /// the bytes of `{"password": "s3cret"}`.  Call [`SecretValue::extract_field`] on
     /// the result to retrieve a specific secret field.
+    // NOTE: raw.to_vec() creates a non-Zeroizing intermediate copy of the
+    // navigated JSON slice.  This is intentional — the caller may need the
+    // intermediate object (e.g. for further field extraction).  The common
+    // single-allocation path is extract_path_field() below, which avoids the
+    // copy entirely.  The intermediate copy is wrapped in SecretValue::new()
+    // (Zeroizing) immediately and no reference to it escapes.
     pub fn extract_path(&self, path: &[&str]) -> Result<SecretValue, SecretError> {
         let raw = json_navigate(self.as_bytes(), path)?;
         Ok(SecretValue::new(raw.to_vec()))
@@ -845,7 +851,16 @@ fn skip_string_b(bytes: &[u8], mut pos: usize) -> Result<usize, SecretError> {
                 // (json_skip_string, used by extract_field) does validate
                 // surrogates.  If surrogate-level validation is needed on the
                 // byte-level path, use extract_field instead of extract_path.
-                pos += if bytes[pos] == b'u' { 5 } else { 1 };
+                if bytes[pos] == b'u' {
+                    if pos + 5 > bytes.len() {
+                        return Err(SecretError::DecodeFailed(
+                            "truncated \\uXXXX escape in JSON string".into(),
+                        ));
+                    }
+                    pos += 5;
+                } else {
+                    pos += 1;
+                }
             }
             // RFC 8259 §7: U+0000–U+001F must be escaped; reject bare control
             // characters in skipped strings, consistent with json_skip_string.

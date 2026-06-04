@@ -301,6 +301,10 @@ impl SecretStore for GcpSmBackend {
             .map_err(|e| SecretError::DecodeFailed(format!("gcp-sm: base64 decode: {e}")))?;
 
         // Verify CRC32C integrity if the field is present in the response.
+        // The dataCrc32c field is optional in the GCP SM REST API — it is
+        // always present for accessSecretVersion but may be absent in other
+        // contexts.  Skipping the check when absent is correct behaviour, not
+        // a silent degradation.
         // GCP SM encodes dataCrc32c as a JSON string (proto3 int64 → string to
         // preserve precision in JavaScript), so we parse it as i64 then cast to u32.
         if let Some(crc_str) = json

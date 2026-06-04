@@ -167,7 +167,13 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
         .create_new(true)
         .mode(0o600)
         .open(&tmp_path)
-        .and_then(|mut f| f.write_all(data));
+        .and_then(|mut f| {
+            f.write_all(data)?;
+            // fsync before rename so the data is durable on disk before the
+            // directory entry is updated.  Without this, a power loss between
+            // write_all and rename could leave a zero-length or partial file.
+            f.sync_all()
+        });
 
     if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
@@ -201,7 +207,14 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
     );
     let tmp_path = parent.join(&tmp_name);
 
-    if let Err(e) = std::fs::write(&tmp_path, data) {
+    // Write + fsync so data is durable before the rename. On non-Unix we
+    // cannot set permissions atomically at creation time; Windows ACLs must
+    // be configured separately (see module-level docs).
+    let write_result = std::fs::File::create(&tmp_path).and_then(|mut f| {
+        f.write_all(data)?;
+        f.sync_all()
+    });
+    if let Err(e) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }

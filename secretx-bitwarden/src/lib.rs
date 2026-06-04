@@ -146,6 +146,10 @@ async fn build_authed_client(access_token: &str) -> Result<(Client, uuid::Uuid),
 
     let auth_resp = client
         .auth()
+        // NOTE: access_token is copied into a plain String here because the
+        // Bitwarden SDK's AccessTokenLoginRequest requires an owned String —
+        // there is no Zeroizing-aware alternative.  This is an SDK limitation
+        // documented in the module-level zeroization note.
         .login_access_token(&AccessTokenLoginRequest {
             access_token: access_token.to_string(),
             state_file: None,

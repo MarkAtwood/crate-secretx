@@ -19,6 +19,14 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 ///
 /// `put` is not supported — env vars are not writable at runtime.
 /// `refresh` re-reads the variable; useful when a process manager rotates it.
+///
+/// # Security note
+///
+/// Environment variables are inherently readable by the same user via
+/// `/proc/<pid>/environ` on Linux.  This is an OS-level property, not a
+/// defect in this backend.  For secrets that must not be visible in the
+/// process environment, use a backend that fetches on demand (e.g.
+/// `aws-sm`, `gcp-sm`, `vault`).
 pub struct EnvBackend {
     var: String,
 }
