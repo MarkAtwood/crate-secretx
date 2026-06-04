@@ -145,6 +145,11 @@ impl GcpSmBackend {
         validate_gcp_resource_name_component(&project, "project")?;
         validate_gcp_resource_name_component(&secret, "secret")?;
 
+        // Token lifetime: the access token is captured once at construction and
+        // used for the lifetime of this backend instance.  Standard gcloud tokens
+        // expire after ~1 hour.  For longer-lived processes, reconstruct the
+        // backend or rotate the token externally.  A token-provider closure is a
+        // possible future enhancement but not currently needed.
         let access_token =
             std::env::var("GCP_ACCESS_TOKEN").map_err(|_| SecretError::Unavailable {
                 backend: BACKEND,

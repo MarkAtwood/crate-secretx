@@ -75,6 +75,10 @@ impl SecretStore for FileBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
+            // ZEROIZATION GAP: std::fs::read returns a plain Vec<u8>.  The Vec is
+            // moved directly into SecretValue::new (→ Zeroizing), so no orphaned
+            // copy exists.  Internal reallocation during the read is a std::fs::read
+            // limitation, not something we can address at this layer.
             std::fs::read(&path)
                 .map(SecretValue::new)
                 .map_err(|e| match e.kind() {

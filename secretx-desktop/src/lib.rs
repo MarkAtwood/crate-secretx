@@ -108,6 +108,10 @@ impl SecretStore for DesktopKeyringBackend {
                     backend: "desktop",
                     source: e.into(),
                 })?;
+            // ZEROIZATION GAP: keyring crate returns plain String from the OS
+            // keychain.  `pw.into_bytes()` is zero-copy (reuses the same heap
+            // allocation), so the buffer enters Zeroizing immediately.  The
+            // keychain's own internal copy is outside our control.
             match entry.get_password() {
                 Ok(pw) => Ok(SecretValue::new(pw.into_bytes())),
                 Err(keyring::Error::NoEntry) => Err(SecretError::NotFound),

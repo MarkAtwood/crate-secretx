@@ -71,6 +71,11 @@ impl AwsKmsBackend {
             ));
         }
 
+        // Algorithm-key type compatibility (e.g. ecdsa-p256 on an RSA key) is
+        // NOT checked at construction time.  A mismatch is caught at sign() time
+        // by KMS server-side enforcement (InvalidKeyUsageException).  An eager
+        // GetPublicKey call here would add network latency to every construction
+        // for a check that almost never fires.
         let algorithm = match parsed.param("algorithm") {
             None | Some("ecdsa-p256") => SigningAlgorithm::EcdsaP256Sha256,
             Some("rsa-pss-2048") => SigningAlgorithm::RsaPss2048Sha256,

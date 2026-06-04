@@ -107,6 +107,9 @@ impl SystemdCredsBackend {
 impl SecretStore for SystemdCredsBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let path = self.credential_path()?;
+        // ZEROIZATION GAP: tokio::fs::read (delegates to std::fs::read) returns
+        // a plain Vec<u8>.  The Vec is moved directly into SecretValue::new
+        // (→ Zeroizing), so no orphaned copy exists.
         match tokio::fs::read(&path).await {
             Ok(bytes) => Ok(SecretValue::new(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(SecretError::NotFound),
