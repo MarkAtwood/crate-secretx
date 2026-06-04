@@ -83,6 +83,11 @@ fn map_kube_error(e: kube::Error) -> SecretError {
             backend: BACKEND,
             source: Box::new(e),
         },
+        // 429 (Too Many Requests) and 5xx are transient — mark as retriable.
+        kube::Error::Api(s) if s.code == 429 || s.code >= 500 => SecretError::Unavailable {
+            backend: BACKEND,
+            source: Box::new(e),
+        },
         _ => SecretError::Backend {
             backend: BACKEND,
             source: Box::new(e),
@@ -562,6 +567,66 @@ mod get_mock_tests {
         assert!(
             matches!(err, secretx_core::SecretError::Unavailable { .. }),
             "expected Unavailable for 403, got: {err:?}"
+        );
+        mock.await.unwrap();
+    }
+
+    fn server_error_json() -> serde_json::Value {
+        json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Failure",
+            "reason": "InternalError",
+            "code": 500,
+            "message": "Internal error occurred"
+        })
+    }
+
+    fn too_many_requests_json() -> serde_json::Value {
+        json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Failure",
+            "reason": "TooManyRequests",
+            "code": 429,
+            "message": "Too many requests"
+        })
+    }
+
+    /// 500 Internal Server Error: must return `Unavailable` (transient).
+    #[tokio::test]
+    async fn test_get_500_is_unavailable() {
+        let (client, mut handle) = make_pair();
+        let backend = make_backend("secretx:k8s:default/my-secret", client);
+
+        let resp = server_error_json();
+        let mock = tokio::spawn(async move { respond(&mut handle, 500, resp).await });
+
+        let Err(err) = secretx_core::SecretStore::get(&backend).await else {
+            panic!("expected Err(Unavailable)");
+        };
+        assert!(
+            matches!(err, secretx_core::SecretError::Unavailable { .. }),
+            "expected Unavailable for 500, got: {err:?}"
+        );
+        mock.await.unwrap();
+    }
+
+    /// 429 Too Many Requests: must return `Unavailable` (transient).
+    #[tokio::test]
+    async fn test_get_429_is_unavailable() {
+        let (client, mut handle) = make_pair();
+        let backend = make_backend("secretx:k8s:default/my-secret", client);
+
+        let resp = too_many_requests_json();
+        let mock = tokio::spawn(async move { respond(&mut handle, 429, resp).await });
+
+        let Err(err) = secretx_core::SecretStore::get(&backend).await else {
+            panic!("expected Err(Unavailable)");
+        };
+        assert!(
+            matches!(err, secretx_core::SecretError::Unavailable { .. }),
+            "expected Unavailable for 429, got: {err:?}"
         );
         mock.await.unwrap();
     }

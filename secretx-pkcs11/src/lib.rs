@@ -153,6 +153,40 @@ impl Pkcs11Backend {
         pkcs11_detect_algorithm(&self.ctx, self.slot, &self.label, &self.user_pin)
     }
 
+    /// Read `CKA_MODULUS_BITS` from an RSA private key and verify the key size.
+    ///
+    /// Only 2048-bit RSA keys are supported (maps to `RsaPss2048Sha256`).
+    fn detect_rsa_algorithm(
+        session: &cryptoki::session::Session,
+        handle: cryptoki::object::ObjectHandle,
+    ) -> Result<SigningAlgorithm, SecretError> {
+        let attrs = session
+            .get_attributes(handle, &[AttributeType::ModulusBits])
+            .map_err(|e| SecretError::Backend {
+                backend: "pkcs11",
+                source: e.into(),
+            })?;
+
+        for attr in attrs {
+            if let Attribute::ModulusBits(bits) = attr {
+                if u64::from(bits) == 2048 {
+                    return Ok(SigningAlgorithm::RsaPss2048Sha256);
+                }
+                return Err(SecretError::Backend {
+                    backend: "pkcs11",
+                    source: format!(
+                        "unsupported RSA key size: {bits} bits; only 2048-bit RSA is supported"
+                    )
+                    .into(),
+                });
+            }
+        }
+
+        // CKA_MODULUS_BITS not available — fall back to assuming 2048 since
+        // we have no other way to determine the key size from PKCS#11.
+        Ok(SigningAlgorithm::RsaPss2048Sha256)
+    }
+
     /// Read `CKA_EC_PARAMS` from an EC private key and map to a [`SigningAlgorithm`].
     ///
     /// Only P-256 (`prime256v1`, OID `1.2.840.10045.3.1.7`) is supported.
@@ -273,7 +307,7 @@ fn pkcs11_detect_algorithm(
             if kt == KeyType::EC {
                 return Pkcs11Backend::detect_ec_algorithm(&session, handle);
             } else if kt == KeyType::RSA {
-                return Ok(SigningAlgorithm::RsaPss2048Sha256);
+                return Pkcs11Backend::detect_rsa_algorithm(&session, handle);
             } else {
                 return Err(SecretError::Backend {
                     backend: "pkcs11",

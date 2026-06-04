@@ -313,7 +313,23 @@ impl SecretStore for BitwardenBackend {
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
-        self.get().await
+        // Bypass the OnceCell session cache entirely: re-authenticate, re-resolve
+        // IDs, and fetch the secret fresh.  OnceCell has no clear(&self), so we
+        // cannot invalidate the cached session from a shared reference — instead
+        // we just sidestep it.  Normal get() still uses the cached path.
+        let (client, org_id) = build_authed_client(&self.access_token).await?;
+        let project_id =
+            resolve_project_id(&client, org_id, &self.project_name).await?;
+        let secret_id =
+            resolve_secret_id(&client, project_id, &self.secret_name).await?;
+
+        let secret_resp = client
+            .secrets()
+            .get(&SecretGetRequest { id: secret_id })
+            .await
+            .map_err(classify_bitwarden_sdk_error)?;
+
+        Ok(SecretValue::new(secret_resp.value.into_bytes()))
     }
 }
 

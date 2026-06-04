@@ -202,10 +202,11 @@ impl SecretStore for AwsSsmBackend {
             .await
             .map_err(map_get_error)?;
 
-        let value = resp
-            .parameter
-            .and_then(|p| p.value)
-            .ok_or(SecretError::NotFound)?;
+        let param = resp.parameter.ok_or(SecretError::NotFound)?;
+        let value = param.value.ok_or_else(|| SecretError::Backend {
+            backend: "aws-ssm",
+            source: "parameter exists but value is None".into(),
+        })?;
 
         Ok(SecretValue::new(value.into_bytes()))
     }

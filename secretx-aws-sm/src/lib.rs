@@ -183,6 +183,11 @@ async fn fetch(
             None => Ok(SecretValue::new(s.as_bytes().to_vec())),
         }
     } else if let Some(blob) = resp.secret_binary() {
+        if field.is_some() {
+            return Err(SecretError::DecodeFailed(
+                "aws-sm: ?field= is not supported on binary secrets (SecretBinary)".into(),
+            ));
+        }
         Ok(SecretValue::new(blob.as_ref().to_vec()))
     } else {
         Err(SecretError::Backend {

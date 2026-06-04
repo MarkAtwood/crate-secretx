@@ -84,6 +84,16 @@ impl LocalSigningBackend {
                     .into(),
             ));
         }
+        // Reject .. components to prevent path traversal.
+        let key_path = std::path::PathBuf::from(parsed.path());
+        if key_path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return Err(SecretError::InvalidUri(
+                "local-signing URI path must not contain '..' components".into(),
+            ));
+        }
         let algo_str = parsed.param("algorithm").ok_or_else(|| {
             SecretError::InvalidUri(
                 "local-signing URI requires `?algorithm=<algo>` query parameter".into(),
@@ -338,6 +348,16 @@ mod tests {
         // Key file doesn't need to exist for algorithm rejection.
         assert!(matches!(
             LocalSigningBackend::from_uri("secretx:local-signing:/tmp/key.der?algorithm=elgamal"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_path_traversal_rejected() {
+        assert!(matches!(
+            LocalSigningBackend::from_uri(
+                "secretx:local-signing:../../etc/shadow?algorithm=ed25519"
+            ),
             Err(SecretError::InvalidUri(_))
         ));
     }

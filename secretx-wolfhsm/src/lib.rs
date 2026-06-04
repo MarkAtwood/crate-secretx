@@ -432,11 +432,24 @@ impl SecretStore for WolfHsmBackend {
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
-        {
-            let mut guard = self.state.lock().map_err(|_| poison_err())?;
+        let state_arc = Arc::clone(&self.state);
+        let label = self.label.clone();
+        let server = self.server.clone();
+        let client_id = self.client_id;
+
+        tokio::task::spawn_blocking(move || {
+            let mut guard = state_arc.lock().map_err(|_| poison_err())?;
             guard.cached_nvm_id = None;
-        }
-        self.get().await
+            ensure_connected(&mut guard, &server, client_id)?;
+            let id = get_cached_or_scan(&mut guard, &label)?;
+            let bytes = guard
+                .connected_client()
+                .nvm_read(id, 0)
+                .map_err(backend_err)?;
+            Ok(SecretValue::new(bytes))
+        })
+        .await
+        .map_err(join_err)?
     }
 }
 
