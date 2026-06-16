@@ -47,8 +47,8 @@ fn read_file_zeroizing(path: &std::path::Path) -> std::io::Result<Zeroizing<Vec<
 
 /// Backend that reads a secret from a single file.
 ///
-/// `get` and `refresh` read the entire file. `put` overwrites the file;
-/// on Unix the file is created with mode `0600` if it does not exist.
+/// `get` and `refresh` read the entire file. `put` overwrites the file
+/// atomically (temp file + rename); on Unix the result is always mode `0600`.
 #[derive(Debug)]
 pub struct FileBackend {
     path: PathBuf,

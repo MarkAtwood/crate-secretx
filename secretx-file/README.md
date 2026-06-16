@@ -29,7 +29,7 @@ let store = FileBackend::from_uri("secretx:file:/etc/secrets/api.key")?;
 let value = store.get().await?;
 ```
 
-`put` overwrites the file atomically; on Unix the file is created with mode `0600` if it does not exist.
+`put` overwrites the file atomically (temp file + rename). On Unix the resulting file is always mode `0600`, regardless of whether the file previously existed — a pre-existing file with looser permissions is replaced by the restrictive temp file.
 
 ## Security note
 
