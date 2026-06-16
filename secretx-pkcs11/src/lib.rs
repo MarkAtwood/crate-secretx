@@ -417,8 +417,6 @@ impl WritableSecretStore for Pkcs11Backend {
         let slot = self.slot;
         let label = self.label.clone();
         let user_pin = self.user_pin.clone();
-        // Copy secret bytes into an owned Vec for the closure.  The Vec is
-        // zeroized inside the closure after create_object commits the value.
         let secret_bytes = value.as_bytes().to_vec();
 
         tokio::task::spawn_blocking(move || -> Result<(), SecretError> {
@@ -445,21 +443,21 @@ impl WritableSecretStore for Pkcs11Backend {
                 Attribute::Label(label.as_bytes().to_vec()),
                 Attribute::Value(secret_bytes),
             ];
-            session
-                .create_object(&template_create)
-                .map_err(|e| SecretError::Backend {
-                    backend: "pkcs11",
-                    source: e.into(),
-                })?;
+            let create_result = session.create_object(&template_create);
 
-            // Zero the plaintext copy in the template now that create_object has
-            // committed the value to the HSM.  cryptoki takes &[Attribute] (not
-            // ownership), so the Vec<u8> is still accessible here.
+            // Zero the plaintext copy unconditionally — on both success and error
+            // paths.  cryptoki takes &[Attribute] (not ownership), so the Vec<u8>
+            // is still accessible here.
             for attr in &mut template_create {
                 if let Attribute::Value(ref mut bytes) = attr {
                     bytes.zeroize();
                 }
             }
+
+            create_result.map_err(|e| SecretError::Backend {
+                backend: "pkcs11",
+                source: e.into(),
+            })?;
 
             // Best-effort cleanup: destroy old objects now that the new one is committed.
             // If destroy_object fails the write has still succeeded — the new value is
