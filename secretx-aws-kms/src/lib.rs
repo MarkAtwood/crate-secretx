@@ -122,6 +122,39 @@ fn is_transient_kms_code(code: &str) -> bool {
     )
 }
 
+/// Classify a KMS SDK error into the appropriate [`SecretError`].
+///
+/// `is_not_found` should return `true` when the service error is a
+/// `NotFoundException` (the concrete type varies per operation).
+fn classify_kms_sdk_error<E>(
+    sdk_err: aws_sdk_kms::error::SdkError<E>,
+    is_not_found: impl FnOnce(&E) -> bool,
+) -> SecretError
+where
+    E: std::error::Error + std::fmt::Display + aws_sdk_kms::error::ProvideErrorMetadata + Send + Sync + 'static,
+{
+    if let Some(svc) = sdk_err.as_service_error() {
+        if is_not_found(svc) {
+            return SecretError::NotFound;
+        }
+        let code = svc.meta().code().unwrap_or("");
+        if is_transient_kms_code(code) {
+            return SecretError::Unavailable {
+                backend: "aws-kms",
+                source: svc.to_string().into(),
+            };
+        }
+        return SecretError::Backend {
+            backend: "aws-kms",
+            source: svc.to_string().into(),
+        };
+    }
+    SecretError::Unavailable {
+        backend: "aws-kms",
+        source: sdk_err.to_string().into(),
+    }
+}
+
 /// Convert a DER-encoded ECDSA-P256 signature to raw 64-byte (r||s) format.
 ///
 /// AWS KMS Sign() returns DER for ECDSA algorithms.  The `SigningBackend::sign()`
@@ -250,30 +283,9 @@ impl SigningBackend for AwsKmsBackend {
             .send()
             .await
             .map_err(|sdk_err| {
-                // Use as_service_error() (borrow, not consume) so we can fall
-                // back to sdk_err.into() for non-service errors without panic.
-                if let Some(svc) = sdk_err.as_service_error() {
-                    if matches!(svc, SignError::NotFoundException(_)) {
-                        return SecretError::NotFound;
-                    }
-                    let code = svc.meta().code().unwrap_or("");
-                    if is_transient_kms_code(code) {
-                        return SecretError::Unavailable {
-                            backend: "aws-kms",
-                            source: svc.to_string().into(),
-                        };
-                    }
-                    // Permission denied, invalid key state, etc. — permanent.
-                    return SecretError::Backend {
-                        backend: "aws-kms",
-                        source: svc.to_string().into(),
-                    };
-                }
-                // Network failure, timeout, credential error — not a service error.
-                SecretError::Unavailable {
-                    backend: "aws-kms",
-                    source: sdk_err.into(),
-                }
+                classify_kms_sdk_error(sdk_err, |svc| {
+                    matches!(svc, SignError::NotFoundException(_))
+                })
             })?;
 
         let sig_bytes = response
@@ -302,26 +314,9 @@ impl SigningBackend for AwsKmsBackend {
             .send()
             .await
             .map_err(|sdk_err| {
-                if let Some(svc) = sdk_err.as_service_error() {
-                    if matches!(svc, GetPublicKeyError::NotFoundException(_)) {
-                        return SecretError::NotFound;
-                    }
-                    let code = svc.meta().code().unwrap_or("");
-                    if is_transient_kms_code(code) {
-                        return SecretError::Unavailable {
-                            backend: "aws-kms",
-                            source: svc.to_string().into(),
-                        };
-                    }
-                    return SecretError::Backend {
-                        backend: "aws-kms",
-                        source: svc.to_string().into(),
-                    };
-                }
-                SecretError::Unavailable {
-                    backend: "aws-kms",
-                    source: sdk_err.into(),
-                }
+                classify_kms_sdk_error(sdk_err, |svc| {
+                    matches!(svc, GetPublicKeyError::NotFoundException(_))
+                })
             })?;
 
         Ok(response
