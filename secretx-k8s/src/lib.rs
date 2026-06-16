@@ -11,6 +11,40 @@ use std::collections::BTreeMap;
 
 const BACKEND: &str = "k8s";
 
+/// Validate a Kubernetes name as a DNS-1123 subdomain (RFC 1123 §2.1).
+///
+/// Rules: lowercase alphanumeric or `-`/`.`, max 253 chars, must start and
+/// end with an alphanumeric character.
+fn validate_dns1123(label: &str, value: &str) -> Result<(), SecretError> {
+    if value.is_empty() {
+        return Err(SecretError::InvalidUri(format!(
+            "k8s {label} must not be empty"
+        )));
+    }
+    if value.len() > 253 {
+        return Err(SecretError::InvalidUri(format!(
+            "k8s {label} `{value}` exceeds 253 characters"
+        )));
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+    {
+        return Err(SecretError::InvalidUri(format!(
+            "k8s {label} `{value}` contains invalid characters; \
+             must be lowercase alphanumeric, '-', or '.'"
+        )));
+    }
+    let first = value.as_bytes()[0];
+    let last = value.as_bytes()[value.len() - 1];
+    if !first.is_ascii_alphanumeric() || !last.is_ascii_alphanumeric() {
+        return Err(SecretError::InvalidUri(format!(
+            "k8s {label} `{value}` must start and end with an alphanumeric character"
+        )));
+    }
+    Ok(())
+}
+
 /// Backend that reads and writes Kubernetes Secrets.
 ///
 /// Construct with [`K8sBackend::from_uri`]. The Kubernetes client is
@@ -50,21 +84,8 @@ impl K8sBackend {
             SecretError::InvalidUri("k8s URI must be secretx:k8s:<namespace>/<secret-name>".into())
         })?;
 
-        if namespace.is_empty() {
-            return Err(SecretError::InvalidUri(
-                "k8s namespace must not be empty".into(),
-            ));
-        }
-        if name.is_empty() {
-            return Err(SecretError::InvalidUri(
-                "k8s secret name must not be empty".into(),
-            ));
-        }
-        if name.contains('/') {
-            return Err(SecretError::InvalidUri(
-                "k8s secret name must not contain '/'".into(),
-            ));
-        }
+        validate_dns1123("namespace", namespace)?;
+        validate_dns1123("secret name", name)?;
 
         let key = parsed.param("key").map(str::to_owned);
         // K8s Secret data keys must match [-._a-zA-Z0-9]+; reject invalid
