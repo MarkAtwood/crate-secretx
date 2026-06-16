@@ -269,6 +269,11 @@ inventory::submit!(secretx_core::WritableBackendRegistration::new(
 mod tests {
     use super::*;
 
+    const _: () = {
+        const fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<KeyringBackend>();
+    };
+
     // ── URI parsing tests (no OS keychain required) ───────────────────────────
 
     #[test]
