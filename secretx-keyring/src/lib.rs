@@ -374,6 +374,7 @@ mod tests {
     #[tokio::test]
     async fn integration_roundtrip() {
         if std::env::var("SECRETX_KEYRING_INTEGRATION_TESTS").as_deref() != Ok("1") {
+            eprintln!("skipped: set SECRETX_KEYRING_INTEGRATION_TESTS=1 to run");
             return;
         }
 
@@ -424,6 +425,7 @@ mod tests {
     #[tokio::test]
     async fn integration_empty_secret_rejected() {
         if std::env::var("SECRETX_KEYRING_INTEGRATION_TESTS").as_deref() != Ok("1") {
+            eprintln!("skipped: set SECRETX_KEYRING_INTEGRATION_TESTS=1 to run");
             return;
         }
         let backend =
