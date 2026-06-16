@@ -282,7 +282,7 @@ impl Pkcs11Backend {
 fn pkcs11_ro_session(
     ctx: &Pkcs11,
     slot: cryptoki::slot::Slot,
-    user_pin: &Option<Zeroizing<String>>,
+    user_pin: Option<&Zeroizing<String>>,
 ) -> Result<cryptoki::session::Session, SecretError> {
     let session = ctx
         .open_ro_session(slot)
@@ -300,7 +300,7 @@ fn pkcs11_ro_session(
 fn pkcs11_rw_session(
     ctx: &Pkcs11,
     slot: cryptoki::slot::Slot,
-    user_pin: &Option<Zeroizing<String>>,
+    user_pin: Option<&Zeroizing<String>>,
 ) -> Result<cryptoki::session::Session, SecretError> {
     let session = ctx
         .open_rw_session(slot)
@@ -326,7 +326,7 @@ fn pkcs11_detect_algorithm(
     ctx: &Pkcs11,
     slot: cryptoki::slot::Slot,
     label: &str,
-    user_pin: &Option<Zeroizing<String>>,
+    user_pin: Option<&Zeroizing<String>>,
 ) -> Result<SigningAlgorithm, SecretError> {
     let session = pkcs11_ro_session(ctx, slot, user_pin)?;
     let handle = Pkcs11Backend::find_object(&session, label, ObjectClass::PRIVATE_KEY)?;
@@ -389,7 +389,7 @@ impl SecretStore for Pkcs11Backend {
         let user_pin = self.user_pin.clone();
 
         tokio::task::spawn_blocking(move || -> Result<SecretValue, SecretError> {
-            let session = pkcs11_ro_session(&ctx, slot, &user_pin)?;
+            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
             let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::DATA)?;
 
             let attrs = session
@@ -450,7 +450,7 @@ impl WritableSecretStore for Pkcs11Backend {
         let secret_bytes = value.as_bytes().to_vec();
 
         tokio::task::spawn_blocking(move || -> Result<(), SecretError> {
-            let session = pkcs11_rw_session(&ctx, slot, &user_pin)?;
+            let session = pkcs11_rw_session(&ctx, slot, user_pin.as_ref())?;
 
             // Collect handles of existing objects BEFORE creating the new one.
             // A creation failure will then leave the existing secret intact.
@@ -531,13 +531,13 @@ impl SigningBackend for Pkcs11Backend {
             let algo = if let Some(algo) = algo_if_known {
                 algo
             } else {
-                let detected = pkcs11_detect_algorithm(&ctx, slot, &label, &user_pin)?;
+                let detected = pkcs11_detect_algorithm(&ctx, slot, &label, user_pin.as_ref())?;
                 // Best-effort cache: if another thread raced us, discard our result.
                 let _ = algo_cache.set(detected);
                 detected
             };
 
-            let session = pkcs11_ro_session(&ctx, slot, &user_pin)?;
+            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
             let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::PRIVATE_KEY)?;
 
             match algo {
@@ -581,7 +581,7 @@ impl SigningBackend for Pkcs11Backend {
         let user_pin = self.user_pin.clone();
 
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>, SecretError> {
-            let session = pkcs11_ro_session(&ctx, slot, &user_pin)?;
+            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
             let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::PUBLIC_KEY)?;
 
             let attrs = session
