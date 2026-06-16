@@ -11,12 +11,16 @@ keywords = ["secrets", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 
+[features]
+## Enable Unix Domain Socket transport (requires wolfHSM with UDS support).
+uds = ["wolfhsm/uds"]
+
 [dependencies]
 secretx-core = { workspace = true }
 async-trait = { workspace = true }
 inventory = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
-wolfhsm = "0.1.0"
+wolfhsm = "0.2.0"
 
 [dev-dependencies]
 tokio = { workspace = true }

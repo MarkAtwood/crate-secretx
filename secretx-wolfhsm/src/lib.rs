@@ -203,10 +203,18 @@ fn resolve_server(configured: &str) -> Result<String, SecretError> {
 
 fn make_transport(addr: &str) -> Result<Transport, SecretError> {
     // Unix domain socket: any path starting with '/'.
+    // Requires the `uds` feature on the `wolfhsm` crate.
     if addr.starts_with('/') {
+        #[cfg(feature = "uds")]
         return Ok(Transport::Uds {
             path: addr.to_owned(),
         });
+        #[cfg(not(feature = "uds"))]
+        return Err(SecretError::InvalidUri(
+            "wolfhsm UDS transport requires the `uds` feature on the `wolfhsm` crate; \
+             use TCP (`host:port`) instead, or enable `secretx-wolfhsm/uds`"
+                .into(),
+        ));
     }
 
     // IPv6 bracket notation: [::1]:8080 → ip="::1", port=8080.
@@ -473,7 +481,7 @@ impl WritableSecretStore for WolfHsmBackend {
                     // Overwrite: wolfhsm deletes then re-adds at the same ID.
                     guard
                         .connected_client()
-                        .nvm_overwrite(id, 0, 0, &label, bytes.as_ref())
+                        .nvm_overwrite(id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
                         .map_err(backend_err)?;
                     // find_cached_or_scan already set cached_nvm_id = Some(id);
                     // this write is defensive — makes the cache invariant visible
@@ -492,7 +500,7 @@ impl WritableSecretStore for WolfHsmBackend {
                     let free_id = find_free_id_from_list(ids)?;
                     guard
                         .connected_client()
-                        .nvm_add(free_id, 0, 0, &label, bytes.as_ref())
+                        .nvm_add(free_id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
                         .map_err(backend_err)?;
                     guard.cached_nvm_id = Some(free_id);
                 }
@@ -648,10 +656,20 @@ mod tests {
 
     // ── make_transport ────────────────────────────────────────────────────────
 
+    #[cfg(feature = "uds")]
     #[test]
     fn transport_uds() {
         let t = make_transport("/run/wolfhsm.sock").unwrap();
         assert!(matches!(t, Transport::Uds { path } if path == "/run/wolfhsm.sock"));
+    }
+
+    #[cfg(not(feature = "uds"))]
+    #[test]
+    fn transport_uds_rejected_without_feature() {
+        assert!(matches!(
+            make_transport("/run/wolfhsm.sock"),
+            Err(SecretError::InvalidUri(_))
+        ));
     }
 
     #[test]
