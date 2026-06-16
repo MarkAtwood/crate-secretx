@@ -329,14 +329,20 @@ impl SecretStore for GcpSmBackend {
         // contexts.  Skipping the check when absent is correct behaviour, not
         // a silent degradation.
         // GCP SM encodes dataCrc32c as a JSON string (proto3 int64 → string to
-        // preserve precision in JavaScript), so we parse it as i64 then cast to u32.
+        // preserve precision in JavaScript). Parse as i64 then convert to u32
+        // with range checking (reject negatives and values > u32::MAX).
         if let Some(crc_str) = json
             .get("payload")
             .and_then(|p| p.get("dataCrc32c"))
             .and_then(|c| c.as_str())
         {
-            let expected = crc_str.parse::<i64>().map(|n| n as u32).map_err(|e| {
+            let raw = crc_str.parse::<i64>().map_err(|e| {
                 SecretError::DecodeFailed(format!("gcp-sm: invalid dataCrc32c value: {e}"))
+            })?;
+            let expected: u32 = raw.try_into().map_err(|_| {
+                SecretError::DecodeFailed(format!(
+                    "gcp-sm: dataCrc32c value {raw} out of u32 range"
+                ))
             })?;
             let computed = crc32c::crc32c(&data);
             if computed != expected {

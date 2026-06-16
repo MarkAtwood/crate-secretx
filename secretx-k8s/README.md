@@ -52,6 +52,14 @@ rules:
     verbs: ["get", "patch", "create"]
 ```
 
+## Error semantics
+
+- **`NotFound`** — the Secret does not exist, or the requested `?key=` is absent from `.data`.
+- **`Backend`** (permanent) — RBAC denied (403), invalid request, bad namespace/name.
+  Do not retry automatically.
+- **`Unavailable`** (transient) — API server 5xx/429, network errors, auth token refresh failure.
+  Retry with backoff.
+
 ## Auth
 
 Auth is resolved in order:
