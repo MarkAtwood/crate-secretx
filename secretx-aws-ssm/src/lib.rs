@@ -27,6 +27,8 @@ use aws_sdk_ssm::{
 };
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 
+const BACKEND: &str = "aws-ssm";
+
 /// Backend that reads and writes AWS SSM Parameter Store parameters.
 ///
 /// Parameters are fetched with decryption enabled (`SecureString` type).
@@ -53,49 +55,44 @@ fn build_ssm_client() -> Result<aws_sdk_ssm::Client, SecretError> {
             let cfg = aws_config::load_from_env().await;
             Ok(aws_sdk_ssm::Client::new(&cfg))
         },
-        "aws-ssm",
+        BACKEND,
     )
+}
+
+/// Wrap an error as a permanent [`SecretError::Backend`] for this backend.
+fn permanent<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) -> SecretError {
+    SecretError::Backend {
+        backend: BACKEND,
+        source: e.into(),
+    }
 }
 
 /// Map a `GetParameterError` to [`SecretError`].
 fn map_get_error(e: SdkError<GetParameterError>) -> SecretError {
     let se = e.as_service_error();
-    if se.map(|s| s.is_parameter_not_found()).unwrap_or(false) {
+    if se.is_some_and(|s| s.is_parameter_not_found()) {
         // Parameter does not exist — the caller may create it.
         return SecretError::NotFound;
     }
-    if se
-        .map(|s| s.is_parameter_version_not_found())
-        .unwrap_or(false)
-    {
+    if se.is_some_and(|s| s.is_parameter_version_not_found()) {
         // Parameter exists but the requested version was deleted.
         // The parameter itself is still there; NotFound would be a lie.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
-    if se.map(|s| s.is_invalid_key_id()).unwrap_or(false) {
+    if se.is_some_and(|s| s.is_invalid_key_id()) {
         // KMS key ID in the parameter config is wrong — permanent.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
     if se
         .and_then(|s| s.meta().code())
-        .map(|c| c == "AccessDeniedException")
-        .unwrap_or(false)
+        .is_some_and(|c| c == "AccessDeniedException")
     {
         // IAM permission denied — permanent until IAM policy changes.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
     // InternalServerError, throttling, network failures — transient.
     SecretError::Unavailable {
-        backend: "aws-ssm",
+        backend: BACKEND,
         source: e.into(),
     }
 }
@@ -105,49 +102,34 @@ fn map_put_error(e: SdkError<PutParameterError>) -> SecretError {
     let se = e.as_service_error();
     if se
         .and_then(|s| s.meta().code())
-        .map(|c| c == "ParameterNotFound")
-        .unwrap_or(false)
+        .is_some_and(|c| c == "ParameterNotFound")
     {
         // put_parameter with overwrite=true creates the parameter if absent, so
         // ParameterNotFound should not occur in practice.  Map defensively to
         // Backend (permanent — retrying will not create the parameter).
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
-    if se.map(|s| s.is_invalid_key_id()).unwrap_or(false) {
+    if se.is_some_and(|s| s.is_invalid_key_id()) {
         // KMS key ID in the parameter config is wrong — permanent.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
     if se
         .and_then(|s| s.meta().code())
-        .map(|c| c == "AccessDeniedException")
-        .unwrap_or(false)
+        .is_some_and(|c| c == "AccessDeniedException")
     {
         // IAM permission denied — permanent until IAM policy changes.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
     if se
         .and_then(|s| s.meta().code())
-        .map(|c| c == "ValidationException")
-        .unwrap_or(false)
+        .is_some_and(|c| c == "ValidationException")
     {
         // Validation failure (e.g. value > 4096 bytes for SecureString) — permanent.
-        return SecretError::Backend {
-            backend: "aws-ssm",
-            source: e.into(),
-        };
+        return permanent(e);
     }
     // InternalServerError, throttling, network failures — transient.
     SecretError::Unavailable {
-        backend: "aws-ssm",
+        backend: BACKEND,
         source: e.into(),
     }
 }
@@ -160,15 +142,15 @@ impl AwsSsmBackend {
     /// loading.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "aws-ssm" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
-                "expected backend `aws-ssm`, got `{}`",
+                "expected backend `{BACKEND}`, got `{}`",
                 parsed.backend()
             )));
         }
         if parsed.path().is_empty() {
             return Err(SecretError::InvalidUri(
-                "aws-ssm URI requires a parameter name: secretx:aws-ssm:<name>".into(),
+                format!("{BACKEND} URI requires a parameter name: secretx:{BACKEND}:<name>"),
             ));
         }
         // SSM parameters are raw strings, not JSON objects — field extraction is
@@ -176,10 +158,11 @@ impl AwsSsmBackend {
         // clear error instead of silently receiving the full raw value.
         if parsed.param("field").is_some() {
             return Err(SecretError::InvalidUri(
-                "aws-ssm does not support ?field= (SSM parameters are raw strings, not JSON \
-                 objects); remove ?field= or use a backend that supports field extraction \
-                 (e.g. aws-sm)"
-                    .into(),
+                format!(
+                    "{BACKEND} does not support ?field= (SSM parameters are raw strings, not JSON \
+                     objects); remove ?field= or use a backend that supports field extraction \
+                     (e.g. aws-sm)"
+                ),
             ));
         }
         let client = build_ssm_client()?;
@@ -204,10 +187,9 @@ impl SecretStore for AwsSsmBackend {
             .map_err(map_get_error)?;
 
         let param = resp.parameter.ok_or(SecretError::NotFound)?;
-        let value = param.value.ok_or_else(|| SecretError::Backend {
-            backend: "aws-ssm",
-            source: "parameter exists but value is None".into(),
-        })?;
+        let value = param
+            .value
+            .ok_or_else(|| permanent("parameter exists but value is None"))?;
 
         Ok(SecretValue::new(value.into_bytes()))
     }
