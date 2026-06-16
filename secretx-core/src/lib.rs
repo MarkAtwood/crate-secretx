@@ -1242,6 +1242,11 @@ impl SecretUri {
     pub fn param(&self, key: &str) -> Option<&str> {
         self.params.get(key).map(String::as_str)
     }
+
+    /// Return an iterator over all query parameter keys.
+    pub fn param_keys(&self) -> impl Iterator<Item = &str> {
+        self.params.keys().map(String::as_str)
+    }
 }
 
 // ── SecretStore ───────────────────────────────────────────────────────────────

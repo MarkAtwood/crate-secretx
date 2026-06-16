@@ -113,6 +113,16 @@ impl LocalSigningBackend {
                 "local-signing URI path must not contain '..' components".into(),
             ));
         }
+        // Reject unknown query parameters to catch typos early.
+        for key in parsed.param_keys() {
+            if key != "algorithm" {
+                return Err(SecretError::InvalidUri(format!(
+                    "local-signing URI: unknown query parameter `{key}`; \
+                     only `?algorithm=` is supported"
+                )));
+            }
+        }
+
         let algo_str = parsed.param("algorithm").ok_or_else(|| {
             SecretError::InvalidUri(
                 "local-signing URI requires `?algorithm=<algo>` query parameter".into(),
