@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// `get` and `refresh` read the entire file. `put` overwrites the file;
 /// on Unix the file is created with mode `0600` if it does not exist.
+#[derive(Debug)]
 pub struct FileBackend {
     path: PathBuf,
 }
@@ -74,6 +75,14 @@ impl FileBackend {
                  (e.g. `secretx:file:/etc/secret.txt`, not `secretx:file:/`)"
                     .into(),
             ));
+        }
+        // Reject unknown query parameters to catch typos early.
+        // The file backend has no supported query parameters.
+        for key in parsed.param_keys() {
+            return Err(SecretError::InvalidUri(format!(
+                "file URI: unknown query parameter `{key}`; \
+                 the file backend does not support query parameters"
+            )));
         }
         Ok(Self { path })
     }
