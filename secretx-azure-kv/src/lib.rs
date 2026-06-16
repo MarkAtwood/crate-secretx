@@ -286,7 +286,10 @@ async fn fetch(
         source: e.into(),
     })?;
 
-    let raw = secret.value.ok_or(SecretError::NotFound)?;
+    let raw = secret.value.ok_or_else(|| SecretError::Backend {
+        backend: BACKEND,
+        source: "azure-kv returned 200 with no secret value field; SDK or service anomaly".into(),
+    })?;
 
     match field {
         Some(f) => {
