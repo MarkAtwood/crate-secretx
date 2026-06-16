@@ -60,19 +60,21 @@ const BACKEND: &str = "bitwarden";
 /// # Session lifetime
 ///
 /// The session state is cached for the **lifetime of this object**.
-/// If the access token is rotated or expires after the first successful `get`,
-/// all subsequent calls will fail with an auth error from the Bitwarden API.
-/// To force re-authentication, drop the existing backend and construct a new
-/// one with the updated `BWS_ACCESS_TOKEN`.
+/// If the access token expires after the first successful `get`,
+/// call [`refresh`](SecretStore::refresh) to re-authenticate and update
+/// the cached session.  Subsequent `get` calls will then use the new client.
 pub struct BitwardenBackend {
     access_token: Zeroizing<String>,
     project_name: String,
     secret_name: String,
     /// Lazily-initialized session state: authenticated client, organization
     /// UUID, project UUID, and secret UUID.  Populated on the first successful
-    /// get().  Caches project_id and secret_id to avoid N+2 API calls on every
-    /// subsequent get (list_projects + list_secrets + get → just get).
-    session: tokio::sync::OnceCell<(Client, uuid::Uuid, uuid::Uuid, uuid::Uuid)>,
+    /// `get()`.  Caches project_id and secret_id to avoid N+2 API calls on
+    /// every subsequent `get()` (list_projects + list_secrets + get → just get).
+    ///
+    /// Uses `RwLock<Option<…>>` instead of `OnceCell` so that `refresh()` can
+    /// replace the session with a re-authenticated client.
+    session: tokio::sync::RwLock<Option<(Client, uuid::Uuid, uuid::Uuid, uuid::Uuid)>>,
 }
 
 impl BitwardenBackend {
@@ -132,7 +134,7 @@ impl BitwardenBackend {
             access_token: Zeroizing::new(access_token),
             project_name: project_name.to_owned(),
             secret_name: secret_name.to_owned(),
-            session: tokio::sync::OnceCell::new(),
+            session: tokio::sync::RwLock::new(None),
         })
     }
 }
@@ -285,24 +287,34 @@ async fn resolve_secret_id(
 /// are stored in `backend.session` so subsequent calls skip the two list
 /// operations and make exactly one API call (`secrets().get`).
 async fn fetch(backend: &BitwardenBackend) -> Result<SecretValue, SecretError> {
-    // Initialize once: auth + name-resolution + ID caching.
-    // On error the OnceCell stays uninitialized so the next call retries.
-    let (client, _org_id, _project_id, secret_id) = backend
-        .session
-        .get_or_try_init(|| async {
-            let (client, org_id) = build_authed_client(&backend.access_token).await?;
-            let project_id = resolve_project_id(&client, org_id, &backend.project_name).await?;
-            let secret_id = resolve_secret_id(&client, project_id, &backend.secret_name).await?;
-            Ok::<_, SecretError>((client, org_id, project_id, secret_id))
-        })
-        .await?;
+    // Fast path: session already initialized — read lock allows concurrent gets.
+    {
+        let guard = backend.session.read().await;
+        if let Some((client, _org_id, _project_id, secret_id)) = &*guard {
+            let secret_resp = client
+                .secrets()
+                .get(&SecretGetRequest { id: *secret_id })
+                .await
+                .map_err(classify_bitwarden_sdk_error)?;
+            return Ok(SecretValue::new(secret_resp.value.into_bytes()));
+        }
+    }
 
+    // Slow path: first call — take write lock and initialize.
+    let mut guard = backend.session.write().await;
+    // Double-check: another task may have initialized while we waited.
+    if guard.is_none() {
+        let (client, org_id) = build_authed_client(&backend.access_token).await?;
+        let project_id = resolve_project_id(&client, org_id, &backend.project_name).await?;
+        let secret_id = resolve_secret_id(&client, project_id, &backend.secret_name).await?;
+        *guard = Some((client, org_id, project_id, secret_id));
+    }
+    let (client, _org_id, _project_id, secret_id) = guard.as_ref().unwrap();
     let secret_resp = client
         .secrets()
         .get(&SecretGetRequest { id: *secret_id })
         .await
         .map_err(classify_bitwarden_sdk_error)?;
-
     Ok(SecretValue::new(secret_resp.value.into_bytes()))
 }
 
@@ -313,21 +325,22 @@ impl SecretStore for BitwardenBackend {
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
-        // Bypass the OnceCell session cache entirely: re-authenticate, re-resolve
-        // IDs, and fetch the secret fresh.  OnceCell has no clear(&self), so we
-        // cannot invalidate the cached session from a shared reference — instead
-        // we just sidestep it.  Normal get() still uses the cached path.
+        // Re-authenticate and re-resolve IDs outside the lock.
         let (client, org_id) = build_authed_client(&self.access_token).await?;
-        let project_id =
-            resolve_project_id(&client, org_id, &self.project_name).await?;
-        let secret_id =
-            resolve_secret_id(&client, project_id, &self.secret_name).await?;
+        let project_id = resolve_project_id(&client, org_id, &self.project_name).await?;
+        let secret_id = resolve_secret_id(&client, project_id, &self.secret_name).await?;
 
+        // Fetch the secret before updating the cache so a fetch failure
+        // does not discard a previously-working session.
         let secret_resp = client
             .secrets()
             .get(&SecretGetRequest { id: secret_id })
             .await
             .map_err(classify_bitwarden_sdk_error)?;
+
+        // Update the cached session so subsequent get() calls use the
+        // refreshed client.
+        *self.session.write().await = Some((client, org_id, project_id, secret_id));
 
         Ok(SecretValue::new(secret_resp.value.into_bytes()))
     }
