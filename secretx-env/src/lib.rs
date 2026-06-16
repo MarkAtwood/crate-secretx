@@ -2,6 +2,19 @@
 //!
 //! URI: `secretx:env:<VAR_NAME>`
 //!
+//! # Security note
+//!
+//! The `SecretValue` returned by `get` is wrapped in `Zeroizing` and zeroed on
+//! drop.  However, the original environment variable remains in the process's
+//! `environ` block for the lifetime of the process.  This copy is visible in
+//! `/proc/self/environ`, core dumps, and is inherited by child processes via
+//! `fork`/`exec`.  This is inherent to environment-variable-sourced secrets and
+//! cannot be mitigated at the application layer.
+//!
+//! For high-sensitivity secrets, prefer file-backed (`secretx-file`),
+//! HSM-backed, or cloud-backed backends where the secret never enters the
+//! process environment.
+//!
 //! ```rust,no_run
 //! # async fn example() -> Result<(), secretx_core::SecretError> {
 //! use secretx_env::EnvBackend;
