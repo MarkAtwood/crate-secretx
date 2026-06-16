@@ -111,6 +111,17 @@ impl BitwardenBackend {
                 "bitwarden URI: project-name and secret-name must not be empty".into(),
             ));
         }
+        // Bitwarden does not allow '/' in project or secret names.  After
+        // percent-decoding, a slash in either component would mean the URI
+        // encoded a literal '/' (%2F) which we cannot reliably distinguish
+        // from the project/secret separator.  Reject to avoid silent mismatch.
+        if secret_name.contains('/') {
+            return Err(SecretError::InvalidUri(
+                "bitwarden URI: secret-name must not contain '/' \
+                 (only one '/' separator between project-name and secret-name is allowed)"
+                    .into(),
+            ));
+        }
 
         // Bitwarden Secrets Manager returns the secret value as a plain string;
         // ?field= JSON extraction is not supported and would silently return the
