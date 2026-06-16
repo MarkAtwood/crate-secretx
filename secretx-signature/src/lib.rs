@@ -403,8 +403,22 @@ mod tests {
             let signing_key = ed25519_dalek::SigningKey::from_bytes(&[0xAB; 32]);
             let der = signing_key.to_pkcs8_der().unwrap();
 
-            let tmp = std::env::temp_dir().join("secretx-sig-test-ed25519.der");
+            // Unique path per thread to avoid races under parallel test execution.
+            let tmp = std::env::temp_dir().join(format!(
+                "secretx-sig-test-ed25519-{:?}.der",
+                std::thread::current().id()
+            ));
+
+            // RAII guard so panics still clean up the temp file.
+            struct Cleanup<'a>(&'a std::path::Path);
+            impl Drop for Cleanup<'_> {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(self.0);
+                }
+            }
+
             std::fs::write(&tmp, der.as_bytes()).unwrap();
+            let _guard = Cleanup(&tmp);
 
             let uri = format!(
                 "secretx:local-signing:{}?algorithm=ed25519",
@@ -423,8 +437,6 @@ mod tests {
             let vk = signing_key.verifying_key();
             let dalek_sig = ed25519_dalek::Signature::from_bytes(&sig.to_bytes());
             vk.verify(msg, &dalek_sig).expect("signature verification failed");
-
-            let _ = std::fs::remove_file(&tmp);
         }
     }
 
