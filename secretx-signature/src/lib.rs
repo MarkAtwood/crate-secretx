@@ -292,6 +292,14 @@ impl signature::Signer<rsa::pss::Signature> for RsaPssSigner {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+// Compile-time proof that adapter types are Send + Sync.
+#[cfg(feature = "ed25519")]
+const _: () = { fn _assert() where Ed25519Signer: Send + Sync {} };
+#[cfg(feature = "ecdsa-p256")]
+const _: () = { fn _assert() where EcdsaP256Signer: Send + Sync {} };
+#[cfg(feature = "rsa-pss")]
+const _: () = { fn _assert() where RsaPssSigner: Send + Sync {} };
+
 #[cfg(test)]
 mod tests {
     use super::*;
