@@ -251,19 +251,14 @@ impl secretx_core::WritableSecretStore for K8sBackend {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(kube::Error::Api(ref s)) if s.is_not_found() => {
-                    // SSA is supposed to create-or-update; a 404 here would mean
-                    // the API group itself is unavailable rather than the resource
-                    // being absent.  Fall through to an explicit POST as a last resort.
-                    data = BTreeMap::new();
-                    data.insert(key_name.to_owned(), ByteString(bytes.to_vec()));
-                }
+                // SSA creates-or-updates in one call. A 404 here means the
+                // namespace itself is missing or the API group is unreachable —
+                // falling through to POST would also fail. Surface the error.
                 Err(e) => return Err(map_kube_error(e)),
             }
         }
 
-        // Create path: Secret does not exist yet (merge-patch 404) or SSA
-        // unexpectedly returned 404.
+        // Create path: Secret does not exist yet (merge-patch 404 with ?key=).
         let new_secret = K8sSecret {
             metadata: ObjectMeta {
                 name: Some(self.name.clone()),
