@@ -151,6 +151,13 @@ impl SecretStore for KeyringBackend {
         // Kernel keyring calls (keyctl syscalls) are synchronous.
         // Run them on a blocking thread to avoid stalling the async executor.
         tokio::task::spawn_blocking(move || {
+            #[cfg(not(target_os = "linux"))]
+            return Err(SecretError::Unavailable {
+                backend: "keyring",
+                source: "secretx-keyring requires Linux (kernel persistent keyring); \
+                         not implemented on this platform"
+                    .into(),
+            });
             #[cfg(target_os = "linux")]
             require_persistent_keyring()?;
             let entry =
@@ -202,6 +209,16 @@ impl WritableSecretStore for KeyringBackend {
         let service = self.service.clone();
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || {
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (&service, &account, &s);
+                return Err(SecretError::Unavailable {
+                    backend: "keyring",
+                    source: "secretx-keyring requires Linux (kernel persistent keyring); \
+                             not implemented on this platform"
+                        .into(),
+                });
+            }
             #[cfg(target_os = "linux")]
             require_persistent_keyring()?;
             let entry =
