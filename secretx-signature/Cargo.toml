@@ -14,7 +14,7 @@ readme = "README.md"
 [dependencies]
 secretx-core = { workspace = true }
 signature = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 ed25519 = { workspace = true, optional = true }
 p256 = { workspace = true, optional = true }
