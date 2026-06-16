@@ -16,6 +16,7 @@ secretx-core = { workspace = true }
 async-trait = { workspace = true }
 inventory = { workspace = true }
 keyring = { version = "3", features = ["linux-native", "crypto-rust"] }
+linux-keyutils = "0.2"
 tokio = { workspace = true }
 zeroize = { workspace = true }
 

@@ -10,10 +10,18 @@
 //! SECRETX_KEYRING_INTEGRATION_TESTS=1 cargo test -p secretx-keyring
 //! ```
 //!
-//! On Linux, secrets are stored in the kernel
+//! On Linux, secrets are stored via the kernel
 //! [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html),
-//! which survives reboots for a configurable window (default: a few days). No
-//! daemon is needed.
+//! which survives across logout/login sessions for a configurable window
+//! (default: a few days, set by `/proc/sys/kernel/keys/persistent_keyring_expiry`).
+//! Secrets do **not** survive reboots. No daemon is needed.
+//!
+//! **Persistent keyring probe**: `get` and `put` probe `keyctl_get_persistent`
+//! before each operation. If the kernel does not support
+//! `CONFIG_PERSISTENT_KEYRINGS` (e.g. some containers, restricted namespaces,
+//! or hardened kernels), [`SecretError::Unavailable`] is returned rather than
+//! silently falling back to the session keyring (which expires when the process
+//! exits).
 //!
 //! **Integration-tested 2026-04-28**: Linux headless (kernel persistent keyring,
 //! no daemon).
@@ -38,7 +46,34 @@
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
-/// Backend that reads and writes secrets via the Linux kernel persistent keyring.
+/// Probe that the kernel persistent keyring is reachable.
+///
+/// Returns `Ok(())` if `keyctl_get_persistent` succeeds, or
+/// [`SecretError::Unavailable`] if the kernel does not support
+/// `CONFIG_PERSISTENT_KEYRINGS` (containers, restricted namespaces, etc.).
+///
+/// Without this check, the `keyring` crate silently falls back to the session
+/// keyring, which expires when the process exits — a much weaker durability
+/// guarantee than the persistent keyring's multi-day window.
+#[cfg(target_os = "linux")]
+fn require_persistent_keyring() -> Result<(), SecretError> {
+    use linux_keyutils::{KeyRing, KeyRingIdentifier};
+    KeyRing::get_persistent(KeyRingIdentifier::Session).map_err(|e| SecretError::Unavailable {
+        backend: "keyring",
+        source: format!(
+            "persistent keyring unavailable (kernel CONFIG_PERSISTENT_KEYRINGS \
+             may be disabled, or this environment restricts keyctl): {e}"
+        )
+        .into(),
+    })?;
+    Ok(())
+}
+
+/// Backend that reads and writes secrets via the Linux kernel keyring.
+///
+/// On Linux, `get` and `put` probe for persistent keyring availability and
+/// return [`SecretError::Unavailable`] if it is not present, rather than
+/// silently falling back to the session keyring.
 ///
 /// The URI path encodes both a service name and an account name separated by
 /// the first `/`:
@@ -115,6 +150,8 @@ impl SecretStore for KeyringBackend {
         // Kernel keyring calls (keyctl syscalls) are synchronous.
         // Run them on a blocking thread to avoid stalling the async executor.
         tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "linux")]
+            require_persistent_keyring()?;
             let entry =
                 keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
                     backend: "keyring",
@@ -164,6 +201,8 @@ impl WritableSecretStore for KeyringBackend {
         let service = self.service.clone();
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "linux")]
+            require_persistent_keyring()?;
             let entry =
                 keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
                     backend: "keyring",
