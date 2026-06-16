@@ -13,7 +13,7 @@
 //! |---------|-------------|----------------|
 //! | `ed25519` | [`Ed25519Signer`] | `ed25519::Signature` |
 //! | `ecdsa-p256` | [`EcdsaP256Signer`] | `p256::ecdsa::Signature` |
-//! | `rsa-pss` | [`RsaPssSigner`] | `rsa::pss::Signature` |
+//! | `rsa-pss` | [`RsaPss2048Signer`] | `rsa::pss::Signature` (2048-bit only) |
 //!
 //! # Example
 //!
@@ -227,19 +227,19 @@ const RSA_2048_SIG_LEN: usize = 256;
 /// Validates at construction that the backend's algorithm is RSA-PSS 2048.
 /// The expected signature length is 256 bytes (2048 bits).
 #[cfg(feature = "rsa-pss")]
-pub struct RsaPssSigner {
+pub struct RsaPss2048Signer {
     backend: Arc<dyn SigningBackend>,
 }
 
 #[cfg(feature = "rsa-pss")]
-impl fmt::Debug for RsaPssSigner {
+impl fmt::Debug for RsaPss2048Signer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RsaPssSigner").finish_non_exhaustive()
+        f.debug_struct("RsaPss2048Signer").finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "rsa-pss")]
-impl RsaPssSigner {
+impl RsaPss2048Signer {
     /// Wrap a `SigningBackend` as a `Signer<rsa::pss::Signature>`.
     ///
     /// Only accepts backends with `SigningAlgorithm::RsaPss2048Sha256`
@@ -267,7 +267,7 @@ impl RsaPssSigner {
 }
 
 #[cfg(feature = "rsa-pss")]
-impl signature::Signer<rsa::pss::Signature> for RsaPssSigner {
+impl signature::Signer<rsa::pss::Signature> for RsaPss2048Signer {
     /// Sign `msg` synchronously by bridging to the async `SigningBackend`.
     ///
     /// See [Async bridging](crate#async-bridging) for threading details.
@@ -301,7 +301,7 @@ const _: () = { fn _assert() where Ed25519Signer: Send + Sync {} };
 #[cfg(feature = "ecdsa-p256")]
 const _: () = { fn _assert() where EcdsaP256Signer: Send + Sync {} };
 #[cfg(feature = "rsa-pss")]
-const _: () = { fn _assert() where RsaPssSigner: Send + Sync {} };
+const _: () = { fn _assert() where RsaPss2048Signer: Send + Sync {} };
 
 #[cfg(test)]
 mod tests {
@@ -467,20 +467,20 @@ mod tests {
         #[test]
         fn rejects_wrong_algorithm() {
             let backend = mock(SigningAlgorithm::Ed25519, vec![]);
-            let err = RsaPssSigner::new(backend).unwrap_err();
+            let err = RsaPss2048Signer::new(backend).unwrap_err();
             assert!(matches!(err, SecretError::AlgorithmMismatch { .. }));
         }
 
         #[test]
         fn accepts_correct_algorithm() {
             let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0u8; 256]);
-            assert!(RsaPssSigner::new(backend).is_ok());
+            assert!(RsaPss2048Signer::new(backend).is_ok());
         }
 
         #[test]
         fn sign_parses_256_byte_signature() {
             let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0xAB; 256]);
-            let signer = RsaPssSigner::new(backend).unwrap();
+            let signer = RsaPss2048Signer::new(backend).unwrap();
             let sig = signer.try_sign(b"msg").unwrap();
             use signature::SignatureEncoding;
             assert_eq!(sig.to_bytes().len(), 256);
@@ -490,7 +490,7 @@ mod tests {
         fn sign_rejects_wrong_size_signature() {
             // 128 bytes = RSA-1024, must be rejected
             let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0xAB; 128]);
-            let signer = RsaPssSigner::new(backend).unwrap();
+            let signer = RsaPss2048Signer::new(backend).unwrap();
             assert!(signer.try_sign(b"msg").is_err());
         }
     }
