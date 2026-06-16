@@ -70,7 +70,7 @@ use secretx_core::SigningAlgorithm;
 /// calling thread. If a tokio runtime is already active, spawns a scoped
 /// thread with its own runtime to avoid a nested `block_on` panic.
 #[cfg(any(feature = "ed25519", feature = "ecdsa-p256", feature = "rsa-pss"))]
-fn sign_sync(backend: &Arc<dyn SigningBackend>, msg: &[u8]) -> Result<Vec<u8>, SecretError> {
+fn sign_sync(backend: &dyn SigningBackend, msg: &[u8]) -> Result<Vec<u8>, SecretError> {
     if tokio::runtime::Handle::try_current().is_err() {
         return tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -161,7 +161,7 @@ impl signature::Signer<ed25519::Signature> for Ed25519Signer {
     /// (e.g. backend unavailable, network failure). Use `try_sign` in
     /// production code.
     fn try_sign(&self, msg: &[u8]) -> Result<ed25519::Signature, signature::Error> {
-        let bytes = sign_sync(&self.backend, msg).map_err(signature::Error::from_source)?;
+        let bytes = sign_sync(&*self.backend, msg).map_err(signature::Error::from_source)?;
         ed25519::Signature::from_slice(&bytes)
     }
 }
@@ -223,7 +223,7 @@ impl signature::Signer<p256::ecdsa::Signature> for EcdsaP256Signer {
     /// The default `sign()` method panics if `try_sign` returns an error.
     /// Use `try_sign` in production code.
     fn try_sign(&self, msg: &[u8]) -> Result<p256::ecdsa::Signature, signature::Error> {
-        let bytes = sign_sync(&self.backend, msg).map_err(signature::Error::from_source)?;
+        let bytes = sign_sync(&*self.backend, msg).map_err(signature::Error::from_source)?;
         p256::ecdsa::Signature::from_slice(&bytes)
     }
 }
@@ -291,7 +291,7 @@ impl signature::Signer<rsa::pss::Signature> for RsaPss2048Signer {
     /// The default `sign()` method panics if `try_sign` returns an error.
     /// Use `try_sign` in production code.
     fn try_sign(&self, msg: &[u8]) -> Result<rsa::pss::Signature, signature::Error> {
-        let bytes = sign_sync(&self.backend, msg).map_err(signature::Error::from_source)?;
+        let bytes = sign_sync(&*self.backend, msg).map_err(signature::Error::from_source)?;
         if bytes.len() != RSA_2048_SIG_LEN {
             return Err(signature::Error::from_source(SecretError::Backend {
                 backend: "signature-adapter",
