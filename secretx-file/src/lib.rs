@@ -32,6 +32,7 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSec
 use std::io::Write;
 use std::path::{Component, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use zeroize::Zeroizing;
 
 /// Read a file into a [`Zeroizing<Vec<u8>>`], pre-sized from metadata to
@@ -51,7 +52,7 @@ fn read_file_zeroizing(path: &std::path::Path) -> std::io::Result<Zeroizing<Vec<
 /// atomically (temp file + rename); on Unix the result is always mode `0600`.
 #[derive(Debug)]
 pub struct FileBackend {
-    path: PathBuf,
+    path: Arc<PathBuf>,
 }
 
 impl FileBackend {
@@ -96,14 +97,14 @@ impl FileBackend {
                  the file backend does not support query parameters"
             )));
         }
-        Ok(Self { path })
+        Ok(Self { path: Arc::new(path) })
     }
 }
 
 #[async_trait::async_trait]
 impl SecretStore for FileBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
-        let path = self.path.clone();
+        let path = Arc::clone(&self.path);
         tokio::task::spawn_blocking(move || {
             // Pre-size a Zeroizing buffer from file metadata to avoid
             // reallocation-induced leaks of partial secret bytes.
@@ -143,7 +144,7 @@ impl WritableSecretStore for FileBackend {
     /// on the system configuration. If you need restrictive ACLs on Windows,
     /// set them separately after construction.
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
-        let path = self.path.clone();
+        let path = Arc::clone(&self.path);
         // into_bytes() consumes value and returns Zeroizing<Vec<u8>>, keeping
         // secret bytes in a Zeroizing allocation until the closure drops it.
         let bytes = value.into_bytes();
@@ -296,13 +297,13 @@ mod tests {
     #[test]
     fn from_uri_absolute() {
         let b = FileBackend::from_uri("secretx:file:/etc/passwd").unwrap();
-        assert_eq!(b.path, PathBuf::from("/etc/passwd"));
+        assert_eq!(*b.path, PathBuf::from("/etc/passwd"));
     }
 
     #[test]
     fn from_uri_relative() {
         let b = FileBackend::from_uri("secretx:file:relative/path").unwrap();
-        assert_eq!(b.path, PathBuf::from("relative/path"));
+        assert_eq!(*b.path, PathBuf::from("relative/path"));
     }
 
     #[test]
