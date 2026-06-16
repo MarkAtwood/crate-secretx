@@ -250,7 +250,7 @@ fn is_not_found(e: &azure_core::Error) -> bool {
 /// Returns true for errors that are likely transient (network I/O, server-side 5xx, 429).
 /// Callers should use `Unavailable` for these; `Backend` for permanent errors.
 fn is_transient(e: &azure_core::Error) -> bool {
-    matches!(e.kind(), ErrorKind::Io)
+    matches!(e.kind(), ErrorKind::Io | ErrorKind::Connection)
         || matches!(
             e.kind(),
             ErrorKind::HttpResponse { status, .. }
