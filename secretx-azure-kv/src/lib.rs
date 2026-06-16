@@ -43,6 +43,7 @@
 //! limitation. The `SecretValue` passed to `put` is zeroed on drop as usual.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use azure_core::{credentials::TokenCredential, error::ErrorKind};
 use azure_identity::{DeveloperToolsCredential, ManagedIdentityCredential};
@@ -82,7 +83,11 @@ impl AzureKvBackend {
     /// Builds the Azure Key Vault client synchronously. Credential discovery
     /// is deferred to the first actual network call.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -91,24 +96,18 @@ impl AzureKvBackend {
         }
 
         // URI path is "<vault-name>/<secret-name>".
-        let (vault_name, secret_name) = split_path(parsed.path()).ok_or_else(|| {
-            // Distinguish the slash-in-secret case: Azure KV secret names
-            // cannot contain '/', so give an actionable message rather than
-            // just "requires vault name and secret name".
-            if parsed.path().bytes().filter(|&b| b == b'/').count() > 1 {
-                SecretError::InvalidUri(
-                    "azure-kv secret name must not contain '/': Azure Key Vault \
-                     does not support nested secret names; \
-                     use secretx:azure-kv:<vault-name>/<secret-name>"
-                        .into(),
-                )
-            } else {
-                SecretError::InvalidUri(
-                    "azure-kv URI requires vault name and secret name: \
-                     secretx:azure-kv:<vault-name>/<secret-name>"
-                        .into(),
-                )
-            }
+        let (vault_name, secret_name) = split_path(parsed.path()).map_err(|e| match e {
+            SplitPathError::NestedSlash => SecretError::InvalidUri(
+                "azure-kv secret name must not contain '/': Azure Key Vault \
+                 does not support nested secret names; \
+                 use secretx:azure-kv:<vault-name>/<secret-name>"
+                    .into(),
+            ),
+            SplitPathError::Invalid => SecretError::InvalidUri(
+                "azure-kv URI requires vault name and secret name: \
+                 secretx:azure-kv:<vault-name>/<secret-name>"
+                    .into(),
+            ),
         })?;
 
         let field = parsed.param("field").map(str::to_owned);
@@ -123,43 +122,57 @@ impl AzureKvBackend {
                 )))
             }
         };
-        let client = build_client(&vault_name, credential_mode)?;
+        let client = build_client(vault_name, credential_mode)?;
 
         Ok(Self {
             client: Arc::new(client),
-            secret_name,
+            secret_name: secret_name.to_owned(),
             field,
         })
     }
 }
 
+/// Why `split_path` rejected the input.
+#[derive(Debug)]
+enum SplitPathError {
+    /// The secret-name component contains `/` (Azure KV forbids slashes in
+    /// secret names). Stored separately so callers can give an actionable
+    /// error message without re-scanning the path.
+    NestedSlash,
+    /// Any other structural problem: missing slash, empty component, invalid
+    /// vault-name characters, etc.
+    Invalid,
+}
+
 /// Split `"<vault-name>/<secret-name>"` into `(vault_name, secret_name)`.
 ///
-/// Returns `None` if either component is empty, if `secret-name` contains `/`
-/// (Azure Key Vault secret names may not contain slashes), or if `vault-name`
-/// contains characters outside `[a-zA-Z0-9-]` (Azure vault names are DNS
-/// labels — allowing other characters would cause URL injection in the
-/// `https://{vault_name}.vault.azure.net` endpoint URL).
-fn split_path(path: &str) -> Option<(String, String)> {
-    let slash = path.find('/')?;
+/// Returns borrowed slices into `path`. Fails with [`SplitPathError::NestedSlash`]
+/// if `secret-name` contains `/` (Azure Key Vault secret names may not contain
+/// slashes), or [`SplitPathError::Invalid`] for any other structural problem
+/// (missing slash, empty component, vault-name outside `[a-zA-Z0-9-]`, etc.).
+fn split_path(path: &str) -> Result<(&str, &str), SplitPathError> {
+    let slash = path.find('/').ok_or(SplitPathError::Invalid)?;
     let vault = &path[..slash];
     let secret = &path[slash + 1..];
-    if vault.is_empty() || secret.is_empty() || secret.contains('/') {
-        return None;
+    if vault.is_empty() || secret.is_empty() {
+        return Err(SplitPathError::Invalid);
+    }
+    if secret.contains('/') {
+        return Err(SplitPathError::NestedSlash);
     }
     // Azure vault names must be 3-24 characters, alphanumeric or hyphens.
     // Rejecting anything else prevents URL injection via the vault name
     // (e.g. "evil.com/x#" would redirect the HTTPS request to a different host).
     if vault.len() < 3 || vault.len() > 24 {
-        return None;
+        return Err(SplitPathError::Invalid);
     }
     if !vault
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
-        return None;
+        return Err(SplitPathError::Invalid);
     }
-    Some((vault.to_string(), secret.to_string()))
+    Ok((vault, secret))
 }
 
 /// Build an Azure Key Vault `SecretClient` using the specified credential mode.
@@ -168,54 +181,77 @@ fn split_path(path: &str) -> Option<(String, String)> {
 fn build_client(vault_name: &str, mode: CredentialMode) -> Result<SecretClient, SecretError> {
     let credential: Arc<dyn TokenCredential> = build_credential(mode)?;
     let vault_url = format!("https://{vault_name}.vault.azure.net");
-    SecretClient::new(&vault_url, credential, None).map_err(|e| SecretError::Backend {
-        backend: BACKEND,
-        source: e.into(),
-    })
+    SecretClient::new(&vault_url, credential, None).map_err(map_azure_error)
 }
 
 /// Build an Azure credential according to `mode`.
 fn build_credential(mode: CredentialMode) -> Result<Arc<dyn TokenCredential>, SecretError> {
     match mode {
         CredentialMode::ManagedIdentity => {
-            let mi = ManagedIdentityCredential::new(None).map_err(|e| SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            })?;
+            let mi = ManagedIdentityCredential::new(None).map_err(map_azure_error)?;
             Ok(mi as Arc<dyn TokenCredential>)
         }
         CredentialMode::Developer => {
-            let dt = DeveloperToolsCredential::new(None).map_err(|e| SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            })?;
+            let dt = DeveloperToolsCredential::new(None).map_err(map_azure_error)?;
             Ok(dt as Arc<dyn TokenCredential>)
         }
         CredentialMode::Chained => {
-            let mi = ManagedIdentityCredential::new(None).map_err(|e| SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            })?;
-            let dt = DeveloperToolsCredential::new(None).map_err(|e| SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            })?;
+            let mi = ManagedIdentityCredential::new(None).map_err(map_azure_error)?;
+            let dt = DeveloperToolsCredential::new(None).map_err(map_azure_error)?;
             Ok(Arc::new(ChainedCredential {
-                sources: vec![mi, dt],
+                sources: vec![
+                    ("ManagedIdentity".to_owned(), mi),
+                    ("DeveloperTools".to_owned(), dt),
+                ],
             }))
         }
     }
 }
 
-/// A simple credential chain that tries each source in order, stopping at the
-/// first that returns a token.
+/// Per-source timeout for credential acquisition. Prevents IMDS hangs in
+/// non-Azure environments from blocking the entire credential chain.
+const CREDENTIAL_SOURCE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A credential chain that tries each source in order, stopping at the first
+/// that returns a token. Each source is subject to [`CREDENTIAL_SOURCE_TIMEOUT`]
+/// and all intermediate errors are preserved in the final error message.
 struct ChainedCredential {
-    sources: Vec<Arc<dyn TokenCredential>>,
+    sources: Vec<(String, Arc<dyn TokenCredential>)>,
 }
 
 impl std::fmt::Debug for ChainedCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ChainedCredential")
+        let names: Vec<&str> = self.sources.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("ChainedCredential")
+            .field("sources", &names)
+            .finish()
+    }
+}
+
+/// Returns `true` if this credential error indicates a misconfiguration rather
+/// than the credential source simply being unavailable.
+///
+/// Misconfiguration examples: wrong client_id, identity not assigned to the
+/// resource (HTTP 400/403 from IMDS), invalid tenant. These should not be
+/// silently swallowed because the operator intended to use this credential
+/// source and it is broken.
+///
+/// Unavailability examples: IMDS not reachable (timeout, connection refused),
+/// which just means we are not running in Azure.
+fn is_credential_misconfiguration(e: &azure_core::Error) -> bool {
+    match e.kind() {
+        // HTTP 400 (bad request) or 403 (forbidden) from IMDS = misconfigured identity
+        ErrorKind::HttpResponse { status, .. } => {
+            *status == azure_core::http::StatusCode::BadRequest
+                || *status == azure_core::http::StatusCode::Forbidden
+        }
+        // Credential errors from the SDK that are not I/O or connection
+        // failures are typically configuration problems.
+        ErrorKind::Credential => true,
+        // I/O and connection errors mean the endpoint is unreachable, not
+        // misconfigured.
+        ErrorKind::Io | ErrorKind::Connection => false,
+        _ => false,
     }
 }
 
@@ -226,19 +262,90 @@ impl TokenCredential for ChainedCredential {
         scopes: &[&str],
         options: Option<azure_core::credentials::TokenRequestOptions<'_>>,
     ) -> azure_core::Result<azure_core::credentials::AccessToken> {
-        let mut last_err: Option<azure_core::Error> = None;
-        for source in &self.sources {
-            match source.get_token(scopes, options.clone()).await {
-                Ok(token) => return Ok(token),
-                Err(e) => last_err = Some(e),
+        let mut errors: Vec<String> = Vec::new();
+        for (name, source) in &self.sources {
+            let result = tokio::time::timeout(
+                CREDENTIAL_SOURCE_TIMEOUT,
+                source.get_token(scopes, options.clone()),
+            )
+            .await;
+
+            match result {
+                Ok(Ok(token)) => return Ok(token),
+                Ok(Err(e)) => {
+                    let is_misconfig = is_credential_misconfiguration(&e);
+                    errors.push(format!("{name}: {e}"));
+                    // If a source fails due to misconfiguration (not just
+                    // unavailability), stop the chain immediately. The
+                    // operator selected this source and it is broken;
+                    // falling through to developer credentials would mask
+                    // a production problem.
+                    if is_misconfig {
+                        let msg = format!(
+                            "credential source '{name}' is misconfigured \
+                             (not just unavailable); stopping chain. \
+                             All errors: [{}]",
+                            errors.join("; ")
+                        );
+                        return Err(azure_core::Error::with_message(
+                            azure_core::error::ErrorKind::Credential,
+                            msg,
+                        ));
+                    }
+                }
+                Err(_elapsed) => {
+                    errors.push(format!(
+                        "{name}: timed out after {}s",
+                        CREDENTIAL_SOURCE_TIMEOUT.as_secs()
+                    ));
+                }
             }
         }
-        Err(last_err.unwrap_or_else(|| {
-            azure_core::Error::with_message(
-                azure_core::error::ErrorKind::Credential,
-                "no credentials available",
+        let msg = if errors.is_empty() {
+            "no credential sources configured".to_owned()
+        } else {
+            format!(
+                "all credential sources failed: [{}]",
+                errors.join("; ")
             )
-        }))
+        };
+        Err(azure_core::Error::with_message(
+            azure_core::error::ErrorKind::Credential,
+            msg,
+        ))
+    }
+}
+
+/// Map an `azure_core::Error` to a `SecretError`, classifying transient vs permanent.
+///
+/// Transient errors (network I/O, 5xx, 429) map to [`SecretError::Unavailable`];
+/// everything else maps to [`SecretError::Backend`].
+///
+/// Both `azure_core::Error` and `SecretError` are foreign types, so `impl From`
+/// is blocked by orphan rules.
+fn map_azure_error(e: azure_core::Error) -> SecretError {
+    if is_transient(&e) {
+        SecretError::Unavailable {
+            backend: BACKEND,
+            source: e.into(),
+        }
+    } else {
+        SecretError::Backend {
+            backend: BACKEND,
+            source: e.into(),
+        }
+    }
+}
+
+/// Map an Azure API error, distinguishing not-found, transient, and permanent.
+///
+/// Used for Azure Key Vault API calls where a 404 should map to
+/// [`SecretError::NotFound`] rather than a backend error.
+fn map_azure_api_error(e: azure_core::Error) -> SecretError {
+    if is_not_found(&e) {
+        SecretError::NotFound
+    } else {
+        map_azure_error(e)
     }
 }
 
@@ -268,26 +375,12 @@ async fn fetch(
     secret_name: &str,
     field: Option<&str>,
 ) -> Result<SecretValue, SecretError> {
-    let resp = client.get_secret(secret_name, None).await.map_err(|e| {
-        if is_not_found(&e) {
-            SecretError::NotFound
-        } else if is_transient(&e) {
-            SecretError::Unavailable {
-                backend: BACKEND,
-                source: e.into(),
-            }
-        } else {
-            SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            }
-        }
-    })?;
+    let resp = client
+        .get_secret(secret_name, None)
+        .await
+        .map_err(map_azure_api_error)?;
 
-    let secret = resp.into_model().map_err(|e| SecretError::Backend {
-        backend: BACKEND,
-        source: e.into(),
-    })?;
+    let secret = resp.into_model().map_err(map_azure_error)?;
 
     let raw = secret.value.ok_or_else(|| SecretError::Backend {
         backend: BACKEND,
@@ -334,15 +427,13 @@ impl WritableSecretStore for AzureKvBackend {
                     .into(),
             ));
         }
-        let raw = std::str::from_utf8(value.as_bytes())
-            .map(str::to_owned)
-            .map_err(|e| {
-                SecretError::DecodeFailed(format!(
-                    "Azure Key Vault secrets must be valid UTF-8 strings \
-                     (invalid byte at position {})",
-                    e.valid_up_to()
-                ))
-            })?;
+        let raw = String::from_utf8(value.as_bytes().to_vec()).map_err(|e| {
+            SecretError::DecodeFailed(format!(
+                "Azure Key Vault secrets must be valid UTF-8 strings \
+                 (invalid byte at position {})",
+                e.utf8_error().valid_up_to()
+            ))
+        })?;
 
         let params = SetSecretParameters {
             value: Some(raw),
@@ -352,29 +443,12 @@ impl WritableSecretStore for AzureKvBackend {
         let request_content =
             params
                 .try_into()
-                .map_err(|e: azure_core::Error| SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                })?;
+                .map_err(|e: azure_core::Error| map_azure_error(e))?;
 
         self.client
             .set_secret(&self.secret_name, request_content, None)
             .await
-            .map_err(|e| {
-                if is_not_found(&e) {
-                    SecretError::NotFound
-                } else if is_transient(&e) {
-                    SecretError::Unavailable {
-                        backend: BACKEND,
-                        source: e.into(),
-                    }
-                } else {
-                    SecretError::Backend {
-                        backend: BACKEND,
-                        source: e.into(),
-                    }
-                }
-            })?;
+            .map_err(map_azure_api_error)?;
 
         Ok(())
     }
@@ -382,31 +456,27 @@ impl WritableSecretStore for AzureKvBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "azure-kv",
-    |uri: &str| {
-        AzureKvBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = AzureKvBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "azure-kv",
-    |uri: &str| {
+    |uri: &secretx_core::SecretUri| {
         // Reject ?field= at construction time: put() cannot write a single
         // JSON field without a read-modify-write race.  Fail early rather than
         // returning InvalidUri from put() at rotation time.
-        if secretx_core::SecretUri::parse(uri)?
-            .param("field")
-            .is_some()
-        {
+        if uri.param("field").is_some() {
             return Err(secretx_core::SecretError::InvalidUri(
                 "azure-kv writable backend does not support ?field=; \
                  put() requires the full secret URI without a field selector"
                     .into(),
             ));
         }
-        AzureKvBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+        let b = AzureKvBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -471,7 +541,10 @@ mod tests {
         // secretx:azure-kv:my-vault/nested/path is ambiguous and would
         // produce a confusing Azure API error. Reject it at parse time so
         // callers get InvalidUri instead.
-        assert!(split_path("my-vault/nested/path").is_none());
+        assert!(matches!(
+            split_path("my-vault/nested/path"),
+            Err(SplitPathError::NestedSlash)
+        ));
     }
 
     #[test]
@@ -491,27 +564,27 @@ mod tests {
 
     #[test]
     fn split_path_no_slash() {
-        assert!(split_path("my-vault").is_none());
+        assert!(split_path("my-vault").is_err());
     }
 
     #[test]
     fn split_path_empty_vault() {
-        assert!(split_path("/my-secret").is_none());
+        assert!(split_path("/my-secret").is_err());
     }
 
     #[test]
     fn split_path_empty_secret() {
-        assert!(split_path("my-vault/").is_none());
+        assert!(split_path("my-vault/").is_err());
     }
 
     #[test]
     fn split_path_vault_name_url_injection() {
         // Vault names must be DNS-safe; special chars would cause URL injection
         // in the "https://{vault_name}.vault.azure.net" endpoint.
-        assert!(split_path("evil.com/secret").is_none());
-        assert!(split_path("evil#fragment/secret").is_none());
-        assert!(split_path("evil:8080/secret").is_none());
-        assert!(split_path("evil@host/secret").is_none());
+        assert!(split_path("evil.com/secret").is_err());
+        assert!(split_path("evil#fragment/secret").is_err());
+        assert!(split_path("evil:8080/secret").is_err());
+        assert!(split_path("evil@host/secret").is_err());
     }
 
     // put() field-selector guard — no Azure connection needed.

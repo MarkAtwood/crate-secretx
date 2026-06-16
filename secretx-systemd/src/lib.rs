@@ -44,6 +44,8 @@
 
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 use zeroize::Zeroizing;
 
@@ -128,12 +130,21 @@ impl SystemdCredsBackend {
     ///
     /// Construction only — does not read `$CREDENTIALS_DIRECTORY`.
     ///
+    /// The credential name is validated per systemd's `credential_name_valid()`:
+    /// printable ASCII only (0x20–0x7E), no `/` or `:`, not `.` or `..`, and
+    /// at most 255 bytes.
+    ///
     /// # Errors
     ///
-    /// Returns [`SecretError::InvalidUri`] if the backend is not `systemd`
-    /// or the credential name fails [`credential_name_valid`].
+    /// Returns [`SecretError::InvalidUri`] if the backend is not `systemd`,
+    /// the credential name fails validation, or unknown query parameters are
+    /// present.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `systemd`, got `{}`",
@@ -142,6 +153,13 @@ impl SystemdCredsBackend {
         }
         let name = parsed.path();
         credential_name_valid(name)?;
+        // Reject unknown query parameters to catch typos early.
+        // The systemd backend does not support any query parameters.
+        for key in parsed.param_keys() {
+            return Err(SecretError::InvalidUri(format!(
+                "systemd URI: unknown query parameter `{key}`"
+            )));
+        }
         Ok(Self {
             name: name.to_string(),
         })
@@ -187,9 +205,9 @@ impl SecretStore for SystemdCredsBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "systemd",
-    |uri: &str| {
-        SystemdCredsBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = SystemdCredsBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
@@ -279,6 +297,14 @@ mod tests {
         let uri = format!("secretx:systemd:{long_name}");
         assert!(matches!(
             SystemdCredsBackend::from_uri(&uri),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_unknown_query_param_rejected() {
+        assert!(matches!(
+            SystemdCredsBackend::from_uri("secretx:systemd:db-password?foo=bar"),
             Err(SecretError::InvalidUri(_))
         ));
     }

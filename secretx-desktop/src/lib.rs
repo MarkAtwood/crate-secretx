@@ -27,10 +27,34 @@
 //! # }
 //! ```
 
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
 const BACKEND: &str = "desktop";
+
+/// Map a [`keyring::Error`] to the appropriate [`SecretError`] variant.
+///
+/// - `NoEntry` → `NotFound` (expected on `get`, should not occur on `put`).
+/// - `NoStorageAccess` / `PlatformFailure` → `Unavailable` (transient; the
+///   inner platform error is forwarded directly).
+/// - Everything else → `Backend` (permanent).
+fn map_keyring_error(e: keyring::Error) -> SecretError {
+    match e {
+        keyring::Error::NoEntry => SecretError::NotFound,
+        keyring::Error::NoStorageAccess(inner) | keyring::Error::PlatformFailure(inner) => {
+            SecretError::Unavailable {
+                backend: BACKEND,
+                source: inner,
+            }
+        }
+        other => SecretError::Backend {
+            backend: BACKEND,
+            source: other.into(),
+        },
+    }
+}
 
 /// Backend that reads and writes secrets via the platform desktop keychain.
 ///
@@ -60,7 +84,11 @@ impl DesktopKeyringBackend {
     /// the path is empty, or the path contains no `/` separator (both
     /// `service` and `account` must be non-empty).
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `desktop`, got `{}`",
@@ -84,13 +112,20 @@ impl DesktopKeyringBackend {
                 "desktop URI: account name must not be empty".into(),
             ));
         }
-        if parsed.param("field").is_some() {
-            return Err(SecretError::InvalidUri(
-                "desktop does not support ?field= (keychain values are opaque strings, not JSON \
-                 objects); remove ?field= or use a backend that supports JSON field extraction \
-                 (e.g. aws-sm)"
-                    .into(),
-            ));
+        // Reject unknown query parameters to catch typos early.
+        // The desktop backend does not support any query parameters.
+        for key in parsed.param_keys() {
+            if key == "field" {
+                return Err(SecretError::InvalidUri(
+                    "desktop does not support ?field= (keychain values are opaque strings, not \
+                     JSON objects); remove ?field= or use a backend that supports JSON field \
+                     extraction (e.g. aws-sm)"
+                        .into(),
+                ));
+            }
+            return Err(SecretError::InvalidUri(format!(
+                "desktop URI: unknown query parameter `{key}`"
+            )));
         }
         Ok(Self {
             service: service.to_string(),
@@ -107,31 +142,15 @@ impl SecretStore for DesktopKeyringBackend {
         // Keychain calls are synchronous and can block (D-Bus round-trip on Linux,
         // Security.framework on macOS). Run on a blocking thread.
         tokio::task::spawn_blocking(move || {
-            let entry =
-                keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                })?;
+            let entry = keyring::Entry::new(&service, &account).map_err(map_keyring_error)?;
             // ZEROIZATION GAP: keyring crate returns plain String from the OS
             // keychain.  `pw.into_bytes()` is zero-copy (reuses the same heap
             // allocation), so the buffer enters Zeroizing immediately.  The
             // keychain's own internal copy is outside our control.
-            match entry.get_password() {
-                Ok(pw) => Ok(SecretValue::new(pw.into_bytes())),
-                Err(keyring::Error::NoEntry) => Err(SecretError::NotFound),
-                Err(keyring::Error::NoStorageAccess(e)) => Err(SecretError::Unavailable {
-                    backend: BACKEND,
-                    source: e,
-                }),
-                Err(keyring::Error::PlatformFailure(e)) => Err(SecretError::Unavailable {
-                    backend: BACKEND,
-                    source: e,
-                }),
-                Err(e) => Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                }),
-            }
+            entry
+                .get_password()
+                .map(|pw| SecretValue::new(pw.into_bytes()))
+                .map_err(map_keyring_error)
         })
         .await
         .map_err(|e| SecretError::Backend {
@@ -161,22 +180,8 @@ impl WritableSecretStore for DesktopKeyringBackend {
         let service = self.service.clone();
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || {
-            let entry =
-                keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                })?;
-            entry.set_password(&s).map_err(|e| match e {
-                keyring::Error::NoStorageAccess(inner)
-                | keyring::Error::PlatformFailure(inner) => SecretError::Unavailable {
-                    backend: BACKEND,
-                    source: inner,
-                },
-                other => SecretError::Backend {
-                    backend: BACKEND,
-                    source: other.into(),
-                },
-            })
+            let entry = keyring::Entry::new(&service, &account).map_err(map_keyring_error)?;
+            entry.set_password(&s).map_err(map_keyring_error)
         })
         .await
         .map_err(|e| SecretError::Backend {
@@ -192,19 +197,18 @@ impl WritableSecretStore for DesktopKeyringBackend {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 inventory::submit!(secretx_core::BackendRegistration::new(
     "desktop",
-    |uri: &str| {
-        DesktopKeyringBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        DesktopKeyringBackend::from_parsed_uri(uri)
+            .map(|b| Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "desktop",
-    |uri: &str| {
-        DesktopKeyringBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        DesktopKeyringBackend::from_parsed_uri(uri)
+            .map(|b| Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -274,6 +278,21 @@ mod tests {
                 assert!(
                     msg.contains("desktop does not support ?field="),
                     "error must mention the limitation, got: {msg}"
+                );
+            }
+            Err(e) => panic!("expected InvalidUri, got: {e}"),
+            Ok(_) => panic!("expected InvalidUri, got Ok"),
+        }
+    }
+
+    #[test]
+    fn from_uri_unknown_query_param_rejected() {
+        let result = DesktopKeyringBackend::from_uri("secretx:desktop:my-app/api-key?foo=bar");
+        match result {
+            Err(SecretError::InvalidUri(msg)) => {
+                assert!(
+                    msg.contains("unknown query parameter `foo`"),
+                    "error must name the unknown parameter, got: {msg}"
                 );
             }
             Err(e) => panic!("expected InvalidUri, got: {e}"),

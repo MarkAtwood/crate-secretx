@@ -6,14 +6,17 @@
 //! # URI format
 //!
 //! ```text
-//! secretx:local-signing:<key_path>?algorithm=<algo>
+//! secretx:local-signing:<key_path>[?algorithm=<algo>]
 //! ```
 //!
 //! Where `<algo>` is one of `ed25519`, `p256`, or `rsa-pss-2048`, and
 //! `<key_path>` is the path to the PKCS#8 DER-encoded private key file.
+//! When `?algorithm=` is omitted the algorithm is auto-detected from the
+//! PKCS#8 DER `AlgorithmIdentifier` OID embedded in the key file.
 //! Use a leading `/` for absolute paths:
 //!
 //! ```text
+//! secretx:local-signing:/etc/secrets/ed25519.der
 //! secretx:local-signing:/etc/secrets/ed25519.der?algorithm=ed25519
 //! secretx:local-signing:relative/key.der?algorithm=p256
 //! secretx:local-signing:/etc/secrets/rsa.der?algorithm=rsa-pss-2048
@@ -33,6 +36,8 @@
 //! # Ok(())
 //! # }
 //! ```
+
+use std::sync::Arc;
 
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use secretx_core::{SecretError, SecretUri, SigningAlgorithm, SigningBackend};
@@ -85,21 +90,28 @@ impl std::fmt::Debug for LocalSigningBackend {
 }
 
 impl LocalSigningBackend {
-    /// Construct from a `secretx:local-signing:<path>?algorithm=<algo>` URI.
+    /// Construct from a `secretx:local-signing:<path>[?algorithm=<algo>]` URI.
     ///
     /// Reads and parses the key file eagerly. Does not retain raw key bytes
     /// after construction — they are zeroed when the local `Zeroizing` buffer
     /// is dropped.
     ///
+    /// When `?algorithm=` is omitted the algorithm is auto-detected by trying
+    /// each supported PKCS#8 decoder (Ed25519, P-256, RSA) in order.
+    ///
     /// # Errors
     ///
     /// - [`SecretError::InvalidUri`] — wrong backend, empty path, `..` components,
-    ///   missing/unknown `?algorithm=`, or unknown query parameters.
+    ///   unknown `?algorithm=` value, or unknown query parameters.
     /// - [`SecretError::NotFound`] — key file does not exist.
     /// - [`SecretError::Backend`] — key file exists but cannot be parsed as
-    ///   PKCS#8 DER for the requested algorithm.
+    ///   PKCS#8 DER for the requested (or any supported) algorithm.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `local-signing`, got `{}`",
@@ -133,15 +145,13 @@ impl LocalSigningBackend {
             }
         }
 
-        let algo_str = parsed.param("algorithm").ok_or_else(|| {
-            SecretError::InvalidUri(
-                "local-signing URI requires `?algorithm=<algo>` query parameter".into(),
-            )
-        })?;
+        let algo_str = parsed.param("algorithm");
 
         // Validate algorithm string before doing any I/O so unknown algorithms
         // always return InvalidUri, not a Backend/NotFound error.
-        validate_algorithm(algo_str)?;
+        if let Some(a) = algo_str {
+            validate_algorithm(a)?;
+        }
 
         // Read key bytes into a pre-sized Zeroizing buffer.  std::fs::read()
         // grows its internal Vec, leaking partial key copies through freed
@@ -155,7 +165,10 @@ impl LocalSigningBackend {
                 },
             })?;
 
-        let (inner, algorithm) = parse_key(algo_str, &key_bytes)?;
+        let (inner, algorithm) = match algo_str {
+            Some(a) => parse_key(a, &key_bytes)?,
+            None => detect_key(&key_bytes)?,
+        };
         Ok(Self { inner, algorithm })
     }
 }
@@ -213,6 +226,45 @@ fn parse_key(
         // parse_key() is called, so this arm is unreachable.
         other => unreachable!("algorithm `{other}` was already rejected by validate_algorithm"),
     }
+}
+
+/// Auto-detect the algorithm from PKCS#8 DER key bytes.
+///
+/// Tries each supported decoder in order (Ed25519, P-256, RSA) and returns
+/// the first that succeeds.  This works because the PKCS#8
+/// `AlgorithmIdentifier` OID differs for each algorithm, so at most one
+/// decoder will accept a given key file.
+fn detect_key(key_bytes: &[u8]) -> Result<(LocalKey, SigningAlgorithm), SecretError> {
+    // Ed25519
+    if let Ok(key) = ed25519_dalek::SigningKey::from_pkcs8_der(key_bytes) {
+        return Ok((LocalKey::Ed25519(key), SigningAlgorithm::Ed25519));
+    }
+    // P-256
+    {
+        use p256::pkcs8::DecodePrivateKey as _;
+        if let Ok(key) = p256::ecdsa::SigningKey::from_pkcs8_der(key_bytes) {
+            return Ok((LocalKey::P256(key), SigningAlgorithm::EcdsaP256Sha256));
+        }
+    }
+    // RSA
+    {
+        use pkcs8::DecodePrivateKey as _;
+        if let Ok(key) = rsa::RsaPrivateKey::from_pkcs8_der(key_bytes) {
+            let signing_key =
+                std::sync::Arc::new(rsa::pss::SigningKey::<sha2::Sha256>::new(key));
+            return Ok((
+                LocalKey::RsaPss2048(signing_key),
+                SigningAlgorithm::RsaPss2048Sha256,
+            ));
+        }
+    }
+
+    Err(SecretError::Backend {
+        backend: BACKEND,
+        source: "key file is not valid PKCS#8 DER for any supported algorithm \
+                 (ed25519, p256, rsa-pss-2048)"
+            .into(),
+    })
 }
 
 // ── SigningBackend impl ───────────────────────────────────────────────────────
@@ -300,9 +352,9 @@ impl SigningBackend for LocalSigningBackend {
 
 inventory::submit!(secretx_core::SigningBackendRegistration::new(
     "local-signing",
-    |uri: &str| {
-        LocalSigningBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
+    |uri: &secretx_core::SecretUri| {
+        let b = LocalSigningBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SigningBackend>)
     },
 ));
 
@@ -311,6 +363,14 @@ inventory::submit!(secretx_core::SigningBackendRegistration::new(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ed25519_dalek::pkcs8::DecodePublicKey as Ed25519DecodePublicKey;
+    use ed25519_dalek::Verifier as Ed25519Verifier;
+    use p256::ecdsa::{signature::Verifier as P256Verifier, Signature as P256Signature, VerifyingKey as P256VerifyingKey};
+    use p256::pkcs8::DecodePublicKey as P256DecodePublicKey;
+    use rsa::pkcs8::DecodePublicKey as RsaDecodePublicKey;
+    use rsa::pss::VerifyingKey as RsaPssVerifyingKey;
+    use rsa::signature::Verifier as RsaVerifier;
 
     // Test key paths — generated once with openssl and stored in /tmp at test time.
     // These paths are stable for the test environment; CI must pre-generate them.
@@ -372,10 +432,12 @@ mod tests {
     }
 
     #[test]
-    fn from_uri_missing_algorithm_param() {
+    fn from_uri_omitted_algorithm_auto_detects() {
+        // Without ?algorithm=, the backend reads the file and auto-detects.
+        // A missing file returns NotFound, not InvalidUri.
         assert!(matches!(
-            LocalSigningBackend::from_uri("secretx:local-signing:/tmp/key.der"),
-            Err(SecretError::InvalidUri(_))
+            LocalSigningBackend::from_uri("secretx:local-signing:/tmp/nonexistent-key.der"),
+            Err(SecretError::NotFound)
         ));
     }
 
@@ -435,14 +497,12 @@ mod tests {
         assert!(!pub_der.is_empty());
 
         // Round-trip: decode the public key DER and verify the signature.
-        use ed25519_dalek::pkcs8::DecodePublicKey;
-        use ed25519_dalek::Verifier;
-        let vk = ed25519_dalek::VerifyingKey::from_public_key_der(&pub_der)
+        let vk = <ed25519_dalek::VerifyingKey as Ed25519DecodePublicKey>::from_public_key_der(&pub_der)
             .expect("VerifyingKey from DER failed");
         let sig = ed25519_dalek::Signature::from_bytes(
             sig_bytes.as_slice().try_into().expect("sig length wrong"),
         );
-        vk.verify(message, &sig)
+        Ed25519Verifier::verify(&vk, message, &sig)
             .expect("Ed25519 signature verification failed");
     }
 
@@ -475,13 +535,11 @@ mod tests {
         assert!(!pub_der.is_empty());
 
         // Verify using P-256 verifying key decoded from the DER.
-        use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
-        use p256::pkcs8::DecodePublicKey;
-        let vk = VerifyingKey::from_public_key_der(&pub_der)
+        let vk = <P256VerifyingKey as P256DecodePublicKey>::from_public_key_der(&pub_der)
             .expect("P-256 VerifyingKey from DER failed");
-        let sig = Signature::from_bytes(sig_bytes.as_slice().into())
+        let sig = P256Signature::from_bytes(sig_bytes.as_slice().into())
             .expect("P-256 Signature decode failed");
-        vk.verify(message, &sig)
+        P256Verifier::verify(&vk, message, &sig)
             .expect("P-256 signature verification failed");
     }
 
@@ -518,15 +576,12 @@ mod tests {
         assert!(!pub_der.is_empty());
 
         // Verify using RSA-PSS verifying key decoded from the DER.
-        use rsa::pkcs8::DecodePublicKey;
-        use rsa::pss::VerifyingKey;
-        use rsa::signature::Verifier;
-        let pub_key = rsa::RsaPublicKey::from_public_key_der(&pub_der)
+        let pub_key = <rsa::RsaPublicKey as RsaDecodePublicKey>::from_public_key_der(&pub_der)
             .expect("RSA public key from DER failed");
-        let vk = VerifyingKey::<sha2::Sha256>::new(pub_key);
+        let vk = RsaPssVerifyingKey::<sha2::Sha256>::new(pub_key);
         let sig = rsa::pss::Signature::try_from(sig_bytes.as_slice())
             .expect("RSA-PSS Signature decode failed");
-        vk.verify(message, &sig)
+        RsaVerifier::verify(&vk, message, &sig)
             .expect("RSA-PSS signature verification failed");
     }
 

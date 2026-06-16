@@ -39,10 +39,43 @@
 //! In `put`, the secret value is serialized into a `serde_json::Value` for the request body;
 //! that intermediate allocation is not zeroed (unavoidable — the value must go over the wire).
 
+use std::sync::{Arc, OnceLock};
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
 const BACKEND: &str = "doppler";
+
+/// Return a shared `reqwest::Client` with a 30-second timeout.
+///
+/// `reqwest::Client` is internally `Arc`-wrapped, so `.clone()` is cheap.
+/// Using a single static client lets all `DopplerBackend` instances share
+/// the same HTTP connection pool.
+///
+/// # Panics
+///
+/// Panics if the TLS backend fails to initialize (fatal, non-recoverable).
+fn shared_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("TLS backend failed to initialize")
+        })
+        .clone()
+}
+
+#[derive(serde::Deserialize)]
+struct DopplerSecretResponse {
+    secret: DopplerSecretInner,
+}
+
+#[derive(serde::Deserialize)]
+struct DopplerSecretInner {
+    computed: String,
+}
 
 /// Backend that reads and writes secrets in Doppler via the REST API.
 ///
@@ -73,7 +106,11 @@ impl DopplerBackend {
     /// Reads `DOPPLER_TOKEN` from the environment. Does not contact Doppler —
     /// construction only.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -81,12 +118,15 @@ impl DopplerBackend {
             )));
         }
 
-        let parts: Vec<&str> = parsed.path().splitn(3, '/').collect();
-        if parts.len() < 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
-            return Err(SecretError::InvalidUri(
-                "doppler URI must be secretx:doppler:<project>/<config>/<name>".into(),
-            ));
-        }
+        let (project, config, name) =
+            match parsed.path().splitn(3, '/').collect::<Vec<&str>>()[..] {
+                [p, c, n] if !p.is_empty() && !c.is_empty() && !n.is_empty() => (p, c, n),
+                _ => {
+                    return Err(SecretError::InvalidUri(
+                        "doppler URI must be secretx:doppler:<project>/<config>/<name>".into(),
+                    ));
+                }
+            };
 
         // Doppler secret values are raw strings fetched via the
         // `secrets.get` API — the response is always a single string, not a
@@ -114,18 +154,11 @@ impl DopplerBackend {
             source: "DOPPLER_TOKEN env var not set".into(),
         })?;
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| SecretError::Backend {
-                backend: "doppler",
-                source: e.into(),
-            })?;
         Ok(Self {
-            client,
-            project: parts[0].to_string(),
-            config: parts[1].to_string(),
-            name: parts[2].to_string(),
+            client: shared_client(),
+            project: project.to_string(),
+            config: config.to_string(),
+            name: name.to_string(),
             token: Zeroizing::new(token),
         })
     }
@@ -136,29 +169,23 @@ impl DopplerBackend {
 /// 5xx codes and HTTP 429 Too Many Requests are transient (→ `Unavailable`);
 /// all other non-2xx codes are permanent configuration/request errors (→ `Backend`).
 fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
-    let base = if detail.is_empty() {
+    let mut msg = if detail.is_empty() {
         format!("HTTP {status}")
     } else {
         format!("HTTP {status}: {detail}")
     };
     if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        SecretError::Unavailable {
+        return SecretError::Unavailable {
             backend: BACKEND,
-            source: base.into(),
-        }
-    } else if status == 401 || status == 403 {
-        SecretError::Backend {
-            backend: BACKEND,
-            source: format!(
-                "{base} (check DOPPLER_TOKEN and project permissions)"
-            )
-            .into(),
-        }
-    } else {
-        SecretError::Backend {
-            backend: BACKEND,
-            source: base.into(),
-        }
+            source: msg.into(),
+        };
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        msg.push_str(" (check DOPPLER_TOKEN and project permissions)");
+    }
+    SecretError::Backend {
+        backend: BACKEND,
+        source: msg.into(),
     }
 }
 
@@ -186,7 +213,7 @@ impl SecretStore for DopplerBackend {
             })?;
 
         let status = resp.status();
-        if status == 404 {
+        if status == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::NotFound);
         }
         if !status.is_success() {
@@ -202,17 +229,10 @@ impl SecretStore for DopplerBackend {
                 source: e.into(),
             })?;
 
-        let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+        let resp: DopplerSecretResponse = serde_json::from_slice(&body).map_err(|e| {
             SecretError::DecodeFailed(format!("doppler: invalid JSON response: {e}"))
         })?;
-        let computed = json
-            .get("secret")
-            .and_then(|s| s.get("computed"))
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| {
-                SecretError::DecodeFailed("doppler: missing secret.computed in response".into())
-            })?;
-        Ok(SecretValue::new(computed.as_bytes().to_vec()))
+        Ok(SecretValue::new(resp.secret.computed.into_bytes()))
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
@@ -259,18 +279,17 @@ impl WritableSecretStore for DopplerBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "doppler",
-    |uri: &str| {
-        DopplerBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = DopplerBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "doppler",
-    |uri: &str| {
-        DopplerBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = DopplerBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 

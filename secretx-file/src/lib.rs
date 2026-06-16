@@ -32,6 +32,15 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSec
 use std::io::Write;
 
 const BACKEND: &str = "file";
+
+/// Map a `tokio::task::JoinError` into `SecretError::Backend`.
+fn map_join_error(e: tokio::task::JoinError) -> SecretError {
+    SecretError::Backend {
+        backend: BACKEND,
+        source: e.into(),
+    }
+}
+
 use std::path::{Component, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -62,7 +71,11 @@ impl FileBackend {
     ///
     /// Does not read the file — construction only.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `file`, got `{}`",
@@ -84,11 +97,19 @@ impl FileBackend {
         }
         // Reject paths with no file_name (e.g. "/" or "foo/").  These would
         // pass from_uri but fail at put() time with an opaque error.
-        if path.file_name().is_none() {
-            return Err(SecretError::InvalidUri(
+        let file_name = path.file_name().ok_or_else(|| {
+            SecretError::InvalidUri(
                 "file URI path must end with a file name, not a directory \
                  (e.g. `secretx:file:/etc/secret.txt`, not `secretx:file:/`)"
                     .into(),
+            )
+        })?;
+        // The path originates from a &str (the URI), so it is always valid
+        // UTF-8.  Validate this at construction time so write_secret_file can
+        // rely on it instead of using to_string_lossy().
+        if file_name.to_str().is_none() {
+            return Err(SecretError::InvalidUri(
+                "file URI path must be valid UTF-8".into(),
             ));
         }
         // Reject unknown query parameters to catch typos early.
@@ -121,10 +142,7 @@ impl SecretStore for FileBackend {
                 })
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: e.into(),
-        })?
+        .map_err(map_join_error)?
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
@@ -136,11 +154,14 @@ impl SecretStore for FileBackend {
 impl WritableSecretStore for FileBackend {
     /// Overwrite the file with `value`. The parent directory must exist.
     ///
-    /// On Unix the file is created or truncated with mode `0600` (owner
-    /// read/write only). On non-Unix platforms (e.g. Windows) the file is
-    /// written with default permissions, which may be world-readable depending
-    /// on the system configuration. If you need restrictive ACLs on Windows,
-    /// set them separately after construction.
+    /// The file is replaced atomically via a temp-file-then-rename pattern:
+    /// data is written to a hidden temp file in the same directory (mode
+    /// `0600` on Unix), fsynced, then renamed into place. On Unix the
+    /// result always has mode `0600` (owner read/write only). On non-Unix
+    /// platforms (e.g. Windows) the file is written with default permissions,
+    /// which may be world-readable depending on the system configuration.
+    /// If you need restrictive ACLs on Windows, set them separately after
+    /// construction.
     ///
     /// **Caveat**: if the write or rename fails, a best-effort cleanup removes
     /// the temp file.  If cleanup itself fails (e.g. the parent directory
@@ -158,16 +179,57 @@ impl WritableSecretStore for FileBackend {
             })
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: e.into(),
-        })?
+        .map_err(map_join_error)?
     }
 }
 
 /// Counter used to make temp file names unique across concurrent `put()` calls
 /// on the same path within a single process.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Build a sibling temp-file path for atomic writes.
+///
+/// Returns `(parent, tmp_path)` where `parent` is the directory containing
+/// `path` and `tmp_path` is a unique hidden file in the same directory.
+fn make_temp_path(path: &std::path::Path) -> std::io::Result<(PathBuf, PathBuf)> {
+    let parent = path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(
+        ".{}.{}.{}.tmp",
+        file_name.to_str().expect("validated as UTF-8 in from_uri"),
+        std::process::id(),
+        counter
+    );
+    let tmp_path = parent.join(&tmp_name);
+    Ok((parent, tmp_path))
+}
+
+/// Rename `tmp_path` to `final_path`, then fsync the parent directory.
+///
+/// On failure the temp file is removed (best-effort) and `final_path` is left
+/// unchanged.
+fn rename_into_place(
+    tmp_path: &std::path::Path,
+    final_path: &std::path::Path,
+    parent: &std::path::Path,
+) -> std::io::Result<()> {
+    if let Err(e) = std::fs::rename(tmp_path, final_path) {
+        let _ = std::fs::remove_file(tmp_path);
+        return Err(e);
+    }
+    // Fsync the parent directory so the new directory entry is durable.
+    // Without this, a power loss after rename could leave the old entry
+    // (or no entry) on recovery.  Best-effort: ignore errors from read-only
+    // or virtual filesystems where directory fsync is unsupported.
+    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+    Ok(())
+}
 
 /// Write `data` to `path` atomically using a temp-file-then-rename pattern.
 ///
@@ -186,18 +248,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-    })?;
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_name = format!(
-        ".{}.{}.{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id(),
-        counter
-    );
-    let tmp_path = parent.join(&tmp_name);
+    let (parent, tmp_path) = make_temp_path(path)?;
 
     // Write secret bytes to the temp file.  Use create_new so the open fails
     // atomically if the temp path somehow already exists — guaranteeing that
@@ -220,19 +271,7 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
         return Err(e);
     }
 
-    // Atomic rename: the target is replaced in a single syscall.
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    // Fsync the parent directory so the new directory entry is durable.
-    // Without this, a power loss after rename could leave the old entry
-    // (or no entry) on recovery.  Best-effort: ignore errors from read-only
-    // or virtual filesystems where directory fsync is unsupported.
-    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
-
-    Ok(())
+    rename_into_place(&tmp_path, path, &parent)
 }
 
 #[cfg(not(unix))]
@@ -240,18 +279,7 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
     // Same temp-then-rename pattern for atomicity on non-Unix platforms.
     // File permissions are not set here (Windows uses ACLs; configure them
     // separately if restrictive access is required).
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
-    })?;
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_name = format!(
-        ".{}.{}.{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id(),
-        counter
-    );
-    let tmp_path = parent.join(&tmp_name);
+    let (parent, tmp_path) = make_temp_path(path)?;
 
     // Write + fsync so data is durable before the rename. On non-Unix we
     // cannot set permissions atomically at creation time; Windows ACLs must
@@ -265,31 +293,22 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
         return Err(e);
     }
 
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    // Best-effort parent directory fsync for durable directory entry.
-    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
-
-    Ok(())
+    rename_into_place(&tmp_path, path, &parent)
 }
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "file",
-    |uri: &str| {
-        FileBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = FileBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "file",
-    |uri: &str| {
-        FileBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = FileBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -429,5 +448,60 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn put_parent_missing() {
+        let base = std::env::temp_dir().join(format!(
+            "secretx_file_test_noparent_{}",
+            std::process::id()
+        ));
+        // Ensure the base directory does not exist.
+        let _ = std::fs::remove_dir_all(&base);
+        let path = base.join("nested").join("secret.txt");
+        let uri = format!("secretx:file:{}", path.display());
+        let store = FileBackend::from_uri(&uri).unwrap();
+
+        let err = store.put(SecretValue::new(b"hello".to_vec())).await;
+        assert!(
+            matches!(err, Err(SecretError::Backend { .. })),
+            "expected Backend error for missing parent dir, got {err:?}"
+        );
+
+        // Clean up just in case.
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn put_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "secretx_file_test_perms_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("secret.txt");
+        // Create the file first so the path is valid, then lock down the dir.
+        std::fs::write(&path, b"original").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let uri = format!("secretx:file:{}", path.display());
+        let store = FileBackend::from_uri(&uri).unwrap();
+
+        let err = store.put(SecretValue::new(b"new-value".to_vec())).await;
+
+        // Restore permissions before any assertions so cleanup always succeeds.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            matches!(err, Err(SecretError::Backend { .. })),
+            "expected Backend error for permission denied, got {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

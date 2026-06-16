@@ -25,6 +25,8 @@ use aws_sdk_ssm::{
     operation::{get_parameter::GetParameterError, put_parameter::PutParameterError},
     types::ParameterType,
 };
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 
 const BACKEND: &str = "aws-ssm";
@@ -141,7 +143,11 @@ impl AwsSsmBackend {
     /// from the environment. No network calls are made beyond credential
     /// loading.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -227,18 +233,17 @@ impl WritableSecretStore for AwsSsmBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "aws-ssm",
-    |uri: &str| {
-        AwsSsmBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = AwsSsmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "aws-ssm",
-    |uri: &str| {
-        AwsSsmBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = AwsSsmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 

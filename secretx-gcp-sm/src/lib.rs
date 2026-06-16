@@ -68,11 +68,39 @@
 //! ```
 
 use base64::Engine as _;
+use std::sync::{Arc, OnceLock};
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
 const BACKEND: &str = "gcp-sm";
 const BASE_URL: &str = "https://secretmanager.googleapis.com/v1";
+
+/// Default version alias used when `?version=` is absent.
+const VERSION_LATEST: &str = "latest";
+
+/// Maximum response body size (10 MiB).
+///
+/// Protects against a malicious or buggy endpoint returning an unbounded
+/// response that would exhaust process memory.
+const MAX_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Process-wide shared HTTP client.
+///
+/// # Panics
+///
+/// Panics if the TLS backend fails to initialize (fatal, non-recoverable).
+fn shared_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("failed to build reqwest client")
+        })
+        .clone()
+}
 
 /// Which version of a secret to read.
 enum SecretVersion {
@@ -104,7 +132,6 @@ enum SecretVersion {
 /// [Workload Identity]: https://cloud.google.com/iam/docs/workload-identity-federation
 /// [Google Cloud Rust client library]: https://github.com/googleapis/google-cloud-rust
 pub struct GcpSmBackend {
-    client: reqwest::Client,
     project: String,
     secret: String,
     version: SecretVersion,
@@ -135,8 +162,19 @@ impl GcpSmBackend {
     /// **The token is stored for the lifetime of this object and never
     /// refreshed.**  For long-running processes, see the token expiry
     /// warning in the struct documentation.
+    ///
+    /// # Errors
+    ///
+    /// - [`SecretError::InvalidUri`] — wrong backend, missing or malformed
+    ///   `<project>/<secret>` path, invalid characters in project/secret/version,
+    ///   or empty `?version=` value.
+    /// - [`SecretError::Unavailable`] — `GCP_ACCESS_TOKEN` env var not set.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -149,7 +187,7 @@ impl GcpSmBackend {
         })?;
 
         let version = match parsed.param("version") {
-            None | Some("latest") => SecretVersion::Latest,
+            None | Some(VERSION_LATEST) => SecretVersion::Latest,
             Some(v) => {
                 validate_gcp_resource_name_component(v, "version")?;
                 SecretVersion::Pinned(v.to_string())
@@ -171,13 +209,6 @@ impl GcpSmBackend {
             })?;
 
         Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .map_err(|e| SecretError::Backend {
-                    backend: "gcp-sm",
-                    source: e.into(),
-                })?,
             project,
             secret,
             version,
@@ -189,7 +220,7 @@ impl GcpSmBackend {
 /// Return the version string for the REST URL.
 fn version_str(v: &SecretVersion) -> &str {
     match v {
-        SecretVersion::Latest => "latest",
+        SecretVersion::Latest => VERSION_LATEST,
         SecretVersion::Pinned(s) => s.as_str(),
     }
 }
@@ -207,15 +238,25 @@ fn split_project_secret(path: &str) -> Option<(String, String)> {
 
 /// Reject characters that are not valid in GCP resource name components.
 ///
-/// GCP project IDs allow `[a-z0-9-]`, secret names allow `[A-Za-z0-9_-]`,
-/// and version labels are `[A-Za-z0-9]+` or `"latest"`.  Any other character
-/// (spaces, `#`, `%`, `/`, etc.) would corrupt the REST URL path or produce a
-/// confusing HTTP 400 from GCP rather than a clear `InvalidUri` at construction
-/// time.
+/// Validates that the component contains only `[A-Za-z0-9_-]` and is 1-255
+/// characters. This is a superset of the per-component GCP rules (project
+/// IDs are `[a-z0-9-]`, secret names are `[A-Za-z0-9_-]`, version labels
+/// are numeric or `"latest"`). The validator intentionally accepts the union
+/// of all component character sets so a single function can be reused. GCP
+/// rejects invalid values server-side with a clear HTTP 400. Any character
+/// outside this set (spaces, `#`, `%`, `/`, etc.) would corrupt the REST URL
+/// path, so those are caught here at construction time.
 fn validate_gcp_resource_name_component(value: &str, label: &str) -> Result<(), SecretError> {
     if value.is_empty() {
         return Err(SecretError::InvalidUri(format!(
             "gcp-sm {label} must not be empty"
+        )));
+    }
+    // GCP Secret Manager secret IDs must be 1-255 characters.
+    if value.len() > 255 {
+        return Err(SecretError::InvalidUri(format!(
+            "gcp-sm {label} too long: {} chars (max 255)",
+            value.len()
         )));
     }
     let ok = value
@@ -243,7 +284,6 @@ fn add_version_url(project: &str, secret: &str) -> String {
 /// Map a non-successful HTTP status to the appropriate [`SecretError`].
 ///
 /// - 5xx and 429 codes are transient (→ `Unavailable`).
-/// - 5xx and 429 codes are transient (→ `Unavailable`).
 /// - 401 is mapped to `Backend` (permanent): the token is expired or invalid,
 ///   retrying with the same token will not help.  The error message suggests
 ///   reconstructing the backend with a fresh `GCP_ACCESS_TOKEN`.
@@ -254,17 +294,18 @@ fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
     } else {
         format!("HTTP {status}: {detail}")
     };
-    if status.is_server_error() || status == 429 {
+    if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         SecretError::Unavailable {
             backend: BACKEND,
             source: msg.into(),
         }
-    } else if status == 401 {
+    } else if status == reqwest::StatusCode::UNAUTHORIZED {
         SecretError::Backend {
             backend: BACKEND,
             source: format!(
-                "{msg} — GCP_ACCESS_TOKEN may have expired or is invalid; \
-                 reconstruct the backend with a fresh token"
+                "{msg} — check credentials and permissions; \
+                 GCP_ACCESS_TOKEN may have expired, be invalid, or lack \
+                 the required IAM roles"
             )
             .into(),
         }
@@ -280,10 +321,9 @@ fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
 impl SecretStore for GcpSmBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let url = access_url(&self.project, &self.secret, version_str(&self.version));
-        let resp = self
-            .client
+        let resp = shared_client()
             .get(&url)
-            .bearer_auth(self.access_token.as_str())
+            .bearer_auth(&*self.access_token)
             .send()
             .await
             .map_err(|e: reqwest::Error| {
@@ -296,9 +336,22 @@ impl SecretStore for GcpSmBackend {
             })?;
 
         let status = resp.status();
-        if status == 404 {
+        if status == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::NotFound);
         }
+
+        if let Some(len) = resp.content_length() {
+            if len > MAX_RESPONSE_BYTES {
+                return Err(SecretError::Backend {
+                    backend: BACKEND,
+                    source: format!(
+                        "response body too large: {len} bytes (limit: {MAX_RESPONSE_BYTES})"
+                    )
+                    .into(),
+                });
+            }
+        }
+
         if !status.is_success() {
             let detail = resp.text().await.unwrap_or_default();
             return Err(map_http_status(status, &detail));
@@ -400,10 +453,9 @@ impl WritableSecretStore for GcpSmBackend {
         )?;
 
         let url = add_version_url(&self.project, &self.secret);
-        let resp = self
-            .client
+        let resp = shared_client()
             .post(&url)
-            .bearer_auth(self.access_token.as_str())
+            .bearer_auth(&*self.access_token)
             .header("Content-Type", "application/json")
             .body(body)
             .send()
@@ -418,10 +470,21 @@ impl WritableSecretStore for GcpSmBackend {
             })?;
 
         let status = resp.status();
-        if status == 404 {
+        if status == reqwest::StatusCode::NOT_FOUND {
             return Err(SecretError::NotFound);
         }
         if !status.is_success() {
+            if let Some(len) = resp.content_length() {
+                if len > MAX_RESPONSE_BYTES {
+                    return Err(SecretError::Backend {
+                        backend: BACKEND,
+                        source: format!(
+                            "response body too large: {len} bytes (limit: {MAX_RESPONSE_BYTES})"
+                        )
+                        .into(),
+                    });
+                }
+            }
             let detail = resp.text().await.unwrap_or_default();
             return Err(map_http_status(status, &detail));
         }
@@ -431,18 +494,17 @@ impl WritableSecretStore for GcpSmBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "gcp-sm",
-    |uri: &str| {
-        GcpSmBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = GcpSmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "gcp-sm",
-    |uri: &str| {
-        GcpSmBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = GcpSmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -514,6 +576,32 @@ mod tests {
         assert!(
             matches!(result, Err(SecretError::InvalidUri(_))),
             "empty version param must return InvalidUri"
+        );
+    }
+
+    #[test]
+    fn from_uri_secret_too_long_rejected() {
+        // GCP secret IDs must be 1-255 characters.
+        let long_secret = "a".repeat(256);
+        let uri = format!("secretx:gcp-sm:my-project/{long_secret}");
+        let result = GcpSmBackend::from_uri(&uri);
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(ref msg)) if msg.contains("too long")),
+            "secret name > 255 chars must return InvalidUri, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn from_uri_secret_at_max_length_accepted() {
+        // 255 characters is the maximum allowed length — should not be rejected.
+        let max_secret = "a".repeat(255);
+        let uri = format!("secretx:gcp-sm:my-project/{max_secret}");
+        // This will fail with Unavailable (no token) but NOT InvalidUri,
+        // proving the length validation passed.
+        let result = GcpSmBackend::from_uri(&uri);
+        assert!(
+            !matches!(result, Err(SecretError::InvalidUri(_))),
+            "secret name at exactly 255 chars must not return InvalidUri, got: {result:?}"
         );
     }
 
@@ -598,22 +686,30 @@ mod tests {
 
     #[tokio::test]
     async fn put_with_pinned_version_returns_invalid_uri() {
-        let _g = ENV_LOCK.lock().unwrap();
         // put() with a pinned ?version= would create a new GCP SM version that
         // get() (which reads self.version) can never see — WritableSecretStore
         // contract violation.  The guard fires before any network call.
         // Use a dummy token so from_uri succeeds; no network is contacted.
-        // SAFETY: ENV_LOCK is held for the duration of this test.  The only
-        // other test that reads GCP_ACCESS_TOKEN in from_uri is
-        // from_uri_missing_token, which also acquires ENV_LOCK.  All other
-        // from_uri_* tests return before the token check.  No concurrent env
-        // mutation can occur while ENV_LOCK is held.
-        unsafe { std::env::set_var("GCP_ACCESS_TOKEN", "dummy-token") };
-        let store =
-            GcpSmBackend::from_uri("secretx:gcp-sm:my-project/my-secret?version=3").unwrap();
+        //
+        // The MutexGuard is scoped to a synchronous block so it is not held
+        // across the `.await` below (holding a MutexGuard across an await point
+        // is unsound with work-stealing runtimes).
+        let store = {
+            let _g = ENV_LOCK.lock().unwrap();
+            // SAFETY: ENV_LOCK is held for the duration of this block.  The
+            // only other test that reads GCP_ACCESS_TOKEN in from_uri is
+            // from_uri_missing_token, which also acquires ENV_LOCK.  All other
+            // from_uri_* tests return before the token check.  No concurrent
+            // env mutation can occur while ENV_LOCK is held.
+            unsafe { std::env::set_var("GCP_ACCESS_TOKEN", "dummy-token") };
+            let s =
+                GcpSmBackend::from_uri("secretx:gcp-sm:my-project/my-secret?version=3").unwrap();
+            // SAFETY: same guarantee as the set_var call above.
+            unsafe { std::env::remove_var("GCP_ACCESS_TOKEN") };
+            s
+        };
+        // _g is dropped here; no MutexGuard is held across this await point.
         let result = store.put(SecretValue::new(b"value".to_vec())).await;
-        // SAFETY: same guarantee as the set_var call above.
-        unsafe { std::env::remove_var("GCP_ACCESS_TOKEN") };
         match result {
             Err(SecretError::InvalidUri(msg)) => {
                 assert!(

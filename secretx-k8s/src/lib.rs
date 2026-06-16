@@ -8,8 +8,12 @@ use kube::api::{Patch, PatchParams, PostParams};
 use kube::Api;
 use secretx_core::{SecretError, SecretUri};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 const BACKEND: &str = "k8s";
+const FIELD_MANAGER: &str = "secretx-k8s";
+/// Default data key used when no `?key=` parameter is specified in the URI.
+const DEFAULT_DATA_KEY: &str = "value";
 
 /// Validate a Kubernetes name as a DNS-1123 subdomain (RFC 1123 §2.1).
 ///
@@ -67,11 +71,33 @@ impl std::fmt::Debug for K8sBackend {
 }
 
 impl K8sBackend {
+    /// Lazily initialize the Kubernetes client, returning a reference.
+    ///
+    /// The client is created on first use via [`kube::Client::try_default()`].
+    /// Subsequent calls return the cached instance.
+    async fn ensure_client(&self) -> Result<kube::Client, SecretError> {
+        self.client
+            .get_or_try_init(|| async {
+                kube::Client::try_default()
+                    .await
+                    .map_err(|e| SecretError::Unavailable {
+                        backend: BACKEND,
+                        source: Box::new(e),
+                    })
+            })
+            .await
+            .cloned()
+    }
+
     /// Construct from a `secretx:k8s:<namespace>/<secret-name>[?key=<data-key>]` URI.
     ///
     /// Validates URI syntax only — no network call is made at construction time.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -149,18 +175,7 @@ fn map_kube_error(e: kube::Error) -> SecretError {
 #[async_trait::async_trait]
 impl secretx_core::SecretStore for K8sBackend {
     async fn get(&self) -> Result<secretx_core::SecretValue, SecretError> {
-        let client = self
-            .client
-            .get_or_try_init(|| async {
-                kube::Client::try_default()
-                    .await
-                    .map_err(|e| SecretError::Unavailable {
-                        backend: BACKEND,
-                        source: Box::new(e),
-                    })
-            })
-            .await?
-            .clone();
+        let client = self.ensure_client().await?;
 
         let api: Api<K8sSecret> = Api::namespaced(client, &self.namespace);
 
@@ -197,24 +212,13 @@ impl secretx_core::SecretStore for K8sBackend {
 #[async_trait::async_trait]
 impl secretx_core::WritableSecretStore for K8sBackend {
     async fn put(&self, value: secretx_core::SecretValue) -> Result<(), SecretError> {
-        let client = self
-            .client
-            .get_or_try_init(|| async {
-                kube::Client::try_default()
-                    .await
-                    .map_err(|e| SecretError::Unavailable {
-                        backend: BACKEND,
-                        source: Box::new(e),
-                    })
-            })
-            .await?
-            .clone();
+        let client = self.ensure_client().await?;
 
         let api: Api<K8sSecret> = Api::namespaced(client, &self.namespace);
-        // When ?key= is absent, store under the literal key name "value".  This is
-        // documented behaviour: a no-key Secret created by secretx-k8s will always
-        // have exactly one entry in .data named "value".
-        let key_name = self.key.as_deref().unwrap_or("value");
+        // When ?key= is absent, store under DEFAULT_DATA_KEY.  This is documented
+        // behaviour: a no-key Secret created by secretx-k8s will always have
+        // exactly one entry in .data named DEFAULT_DATA_KEY.
+        let key_name = self.key.as_deref().unwrap_or(DEFAULT_DATA_KEY);
         let bytes = value.into_bytes();
 
         // ZEROIZATION GAP: ByteString wraps a plain Vec<u8> (not Zeroizing).
@@ -252,7 +256,7 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             }
         } else {
             // Server-side apply (SSA): create-or-update in a single API call.
-            // SSA gives field manager "secretx-k8s" ownership of the "value" key.
+            // SSA gives field manager FIELD_MANAGER ownership of the DEFAULT_DATA_KEY key.
             // Subsequent no-key puts update "value" in-place; keys owned by other
             // managers (e.g. set via ?key=) are left untouched by SSA.
             //
@@ -266,7 +270,7 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             match api
                 .patch(
                     &self.name,
-                    &PatchParams::apply("secretx-k8s"),
+                    &PatchParams::apply(FIELD_MANAGER),
                     &Patch::Apply(apply_secret),
                 )
                 .await
@@ -320,39 +324,21 @@ impl secretx_core::WritableSecretStore for K8sBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     BACKEND,
-    |uri: &str| {
-        K8sBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = K8sBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     BACKEND,
-    |uri: &str| {
-        K8sBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = K8sBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-//
-// These tests are written TDD-style: the K8sBackend struct and from_uri()
-// do not exist yet.  The tests will fail to compile until the implementer
-// adds:
-//
-//   pub(crate) struct K8sBackend {
-//       pub(crate) namespace: String,
-//       pub(crate) name: String,
-//       pub(crate) key: Option<String>,
-//       // ... additional fields (e.g. kube::Client) as needed
-//   }
-//
-//   impl K8sBackend {
-//       pub fn from_uri(uri: &str) -> Result<Self, SecretError> { ... }
-//   }
-//
-// Once those exist, all tests below must pass without modification.
 
 #[cfg(test)]
 mod tests {
@@ -470,31 +456,35 @@ mod tests {
     }
 }
 
-// ── Mock HTTP tests: SecretStore::get() ───────────────────────────────────────
+// ── Shared mock helpers for get and put tests ─────────────────────────────────
 
 #[cfg(test)]
-mod get_mock_tests {
+mod mock_helpers {
     use super::*;
     use http::{Request, Response};
     use kube::client::Body;
     use serde_json::json;
 
-    type Handle = tower_test::mock::Handle<Request<Body>, Response<Body>>;
+    pub type Handle = tower_test::mock::Handle<Request<Body>, Response<Body>>;
 
-    fn make_pair() -> (kube::Client, Handle) {
+    pub fn make_pair() -> (kube::Client, Handle) {
         let (svc, handle) = tower_test::mock::pair::<Request<Body>, Response<Body>>();
         let client = kube::Client::new(svc, "default");
         (client, handle)
     }
 
-    fn make_backend(uri: &str, client: kube::Client) -> K8sBackend {
+    pub fn make_backend(uri: &str, client: kube::Client) -> K8sBackend {
         let backend = K8sBackend::from_uri(uri).unwrap();
         backend.client.set(client).ok();
         backend
     }
 
-    async fn respond(handle: &mut Handle, status: u16, body: serde_json::Value) {
-        let (_, send) = handle.next_request().await.expect("expected mock request");
+    pub async fn respond(
+        handle: &mut Handle,
+        status: u16,
+        body: serde_json::Value,
+    ) -> Request<Body> {
+        let (req, send) = handle.next_request().await.expect("expected mock request");
         let bytes = serde_json::to_vec(&body).unwrap();
         send.send_response(
             Response::builder()
@@ -502,9 +492,14 @@ mod get_mock_tests {
                 .body(Body::from(bytes))
                 .unwrap(),
         );
+        req
     }
 
-    fn secret_json(namespace: &str, name: &str, data: serde_json::Value) -> serde_json::Value {
+    pub fn secret_json(
+        namespace: &str,
+        name: &str,
+        data: serde_json::Value,
+    ) -> serde_json::Value {
         json!({
             "apiVersion": "v1",
             "kind": "Secret",
@@ -514,7 +509,7 @@ mod get_mock_tests {
         })
     }
 
-    fn not_found_json(name: &str) -> serde_json::Value {
+    pub fn not_found_json(name: &str) -> serde_json::Value {
         json!({
             "apiVersion": "v1",
             "kind": "Status",
@@ -525,7 +520,7 @@ mod get_mock_tests {
         })
     }
 
-    fn forbidden_json() -> serde_json::Value {
+    pub fn forbidden_json() -> serde_json::Value {
         json!({
             "apiVersion": "v1",
             "kind": "Status",
@@ -535,6 +530,14 @@ mod get_mock_tests {
             "message": "secrets is forbidden"
         })
     }
+}
+
+// ── Mock HTTP tests: SecretStore::get() ───────────────────────────────────────
+
+#[cfg(test)]
+mod get_mock_tests {
+    use super::mock_helpers::*;
+    use serde_json::json;
 
     /// Single-key Secret, no `?key=`: returns that key's bytes.
     #[tokio::test]
@@ -548,7 +551,13 @@ mod get_mock_tests {
 
         let result = secretx_core::SecretStore::get(&backend).await.unwrap();
         assert_eq!(result.as_bytes(), b"hello");
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
+        assert!(
+            req.uri().path().contains("/namespaces/default/secrets/my-secret"),
+            "GET path must target the correct namespace/secret, got: {}",
+            req.uri()
+        );
     }
 
     /// Multi-key Secret with `?key=db-pass`: returns that specific key's bytes.
@@ -567,7 +576,13 @@ mod get_mock_tests {
 
         let result = secretx_core::SecretStore::get(&backend).await.unwrap();
         assert_eq!(result.as_bytes(), b"hello");
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
+        assert!(
+            req.uri().path().contains("/namespaces/default/secrets/my-secret"),
+            "GET path must target the correct namespace/secret, got: {}",
+            req.uri()
+        );
     }
 
     /// Multi-key Secret, no `?key=`: must return `InvalidUri`.
@@ -590,7 +605,8 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::InvalidUri(_)),
             "expected InvalidUri, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
     }
 
     /// Secret not found (404): must return `NotFound`.
@@ -609,7 +625,13 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::NotFound),
             "expected NotFound, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
+        assert!(
+            req.uri().path().contains("/namespaces/default/secrets/missing"),
+            "GET path must target the correct secret, got: {}",
+            req.uri()
+        );
     }
 
     /// Secret exists but `.data` is absent: must return `NotFound`.
@@ -634,7 +656,8 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::NotFound),
             "expected NotFound for absent .data, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
     }
 
     /// 403 Forbidden response: must return `Backend` (permanent RBAC error).
@@ -653,7 +676,8 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::Backend { .. }),
             "expected Backend for 403, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
     }
 
     fn server_error_json() -> serde_json::Value {
@@ -694,7 +718,8 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::Unavailable { .. }),
             "expected Unavailable for 500, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
     }
 
     /// 429 Too Many Requests: must return `Unavailable` (transient).
@@ -713,7 +738,8 @@ mod get_mock_tests {
             matches!(err, secretx_core::SecretError::Unavailable { .. }),
             "expected Unavailable for 429, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::GET);
     }
 }
 
@@ -721,67 +747,8 @@ mod get_mock_tests {
 
 #[cfg(test)]
 mod put_mock_tests {
-    use super::*;
-    use http::{Request, Response};
-    use kube::client::Body;
+    use super::mock_helpers::*;
     use serde_json::json;
-
-    type Handle = tower_test::mock::Handle<Request<Body>, Response<Body>>;
-
-    fn make_pair() -> (kube::Client, Handle) {
-        let (svc, handle) = tower_test::mock::pair::<Request<Body>, Response<Body>>();
-        let client = kube::Client::new(svc, "default");
-        (client, handle)
-    }
-
-    fn make_backend(uri: &str, client: kube::Client) -> K8sBackend {
-        let backend = K8sBackend::from_uri(uri).unwrap();
-        backend.client.set(client).ok();
-        backend
-    }
-
-    async fn respond(handle: &mut Handle, status: u16, body: serde_json::Value) {
-        let (_, send) = handle.next_request().await.expect("expected mock request");
-        let bytes = serde_json::to_vec(&body).unwrap();
-        send.send_response(
-            Response::builder()
-                .status(status)
-                .body(Body::from(bytes))
-                .unwrap(),
-        );
-    }
-
-    fn secret_json(namespace: &str, name: &str, data: serde_json::Value) -> serde_json::Value {
-        json!({
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "metadata": { "name": name, "namespace": namespace, "resourceVersion": "2" },
-            "data": data,
-            "type": "Opaque"
-        })
-    }
-
-    fn not_found_json(name: &str) -> serde_json::Value {
-        json!({
-            "apiVersion": "v1",
-            "kind": "Status",
-            "status": "Failure",
-            "reason": "NotFound",
-            "code": 404,
-            "message": format!("secrets \"{}\" not found", name)
-        })
-    }
-
-    fn forbidden_json() -> serde_json::Value {
-        json!({
-            "apiVersion": "v1",
-            "kind": "Status",
-            "status": "Failure",
-            "reason": "Forbidden",
-            "code": 403,
-            "message": "secrets is forbidden"
-        })
-    }
 
     /// `?key=` specified, PATCH succeeds (200): `put()` returns Ok(()).
     #[tokio::test]
@@ -796,7 +763,20 @@ mod put_mock_tests {
         secretx_core::WritableSecretStore::put(&backend, value)
             .await
             .unwrap();
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::PATCH);
+        assert!(
+            req.uri()
+                .path()
+                .contains("/namespaces/default/secrets/my-secret"),
+            "PATCH path must target the correct namespace/secret, got: {}",
+            req.uri()
+        );
+        assert_eq!(
+            req.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/merge-patch+json"),
+            "merge-patch with ?key= must use application/merge-patch+json"
+        );
     }
 
     /// `?key=` specified, PATCH returns 404 → falls through to POST create (201): Ok(()).
@@ -807,21 +787,45 @@ mod put_mock_tests {
 
         let mock = tokio::spawn(async move {
             // First request: PATCH → 404
-            respond(&mut handle, 404, not_found_json("new-secret")).await;
+            let req1 = respond(&mut handle, 404, not_found_json("new-secret")).await;
             // Second request: POST create → 201
-            respond(
+            let req2 = respond(
                 &mut handle,
                 201,
                 secret_json("default", "new-secret", json!({ "password": "aGVsbG8=" })),
             )
             .await;
+            (req1, req2)
         });
 
         let value = secretx_core::SecretValue::new(b"hello".to_vec());
         secretx_core::WritableSecretStore::put(&backend, value)
             .await
             .unwrap();
-        mock.await.unwrap();
+        let (req1, req2) = mock.await.unwrap();
+
+        // First request: merge-patch attempt
+        assert_eq!(req1.method(), http::Method::PATCH);
+        assert!(
+            req1.uri()
+                .path()
+                .contains("/namespaces/default/secrets/new-secret"),
+            "PATCH path must target the correct secret, got: {}",
+            req1.uri()
+        );
+        assert_eq!(
+            req1.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/merge-patch+json"),
+            "merge-patch with ?key= must use application/merge-patch+json"
+        );
+
+        // Second request: POST create fallback
+        assert_eq!(req2.method(), http::Method::POST);
+        assert!(
+            req2.uri().path().contains("/namespaces/default/secrets"),
+            "POST path must target the secrets collection, got: {}",
+            req2.uri()
+        );
     }
 
     /// No `?key=`, SSA PATCH succeeds (200): `put()` returns Ok(()).
@@ -837,7 +841,27 @@ mod put_mock_tests {
         secretx_core::WritableSecretStore::put(&backend, value)
             .await
             .unwrap();
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::PATCH);
+        assert!(
+            req.uri()
+                .path()
+                .contains("/namespaces/default/secrets/my-secret"),
+            "SSA PATCH path must target the correct namespace/secret, got: {}",
+            req.uri()
+        );
+        // SSA (server-side apply) uses application/apply-patch+yaml content type.
+        assert_eq!(
+            req.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/apply-patch+yaml"),
+            "SSA without ?key= must use application/apply-patch+yaml"
+        );
+        // SSA must include the fieldManager query parameter.
+        let query = req.uri().query().unwrap_or("");
+        assert!(
+            query.contains("fieldManager=secretx-k8s"),
+            "SSA must set fieldManager=secretx-k8s, got query: {query}"
+        );
     }
 
     /// 403 Forbidden response to PATCH: `put()` returns `Backend` (permanent RBAC error).
@@ -857,6 +881,12 @@ mod put_mock_tests {
             matches!(err, secretx_core::SecretError::Backend { .. }),
             "expected Backend for 403, got: {err:?}"
         );
-        mock.await.unwrap();
+        let req = mock.await.unwrap();
+        assert_eq!(req.method(), http::Method::PATCH);
+        assert_eq!(
+            req.headers().get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/merge-patch+json"),
+            "merge-patch with ?key= must use application/merge-patch+json"
+        );
     }
 }

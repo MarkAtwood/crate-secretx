@@ -1,6 +1,6 @@
 //! HashiCorp Vault KV v2 backend for secretx.
 //!
-//! URI: `secretx:vault:<mount>/<secret-path>[?field=<json_field>&addr=<vault_addr>]`
+//! URI: `secretx:vault:<mount>/<secret-path>[?field=<json_field>&addr=<vault_addr>&namespace=<ns>]`
 //!
 //! - `mount` — KV v2 mount point, e.g. `secret`
 //! - `secret-path` — path within the mount, e.g. `prod/api-key`
@@ -11,6 +11,8 @@
 //!   accepts a JSON object string and writes it as the complete data map.
 //! - `addr` — (optional) Vault server address; defaults to `VAULT_ADDR` env var,
 //!   then `http://127.0.0.1:8200`
+//! - `namespace` — (optional) Vault Enterprise namespace. When set, every request
+//!   includes the `X-Vault-Namespace` header targeting the given namespace.
 //!
 //! # URI trust assumption
 //!
@@ -67,6 +69,8 @@
 //! # }
 //! ```
 
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
@@ -92,6 +96,18 @@ fn encode_path(path: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Return the JSON type name for use in error messages.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 /// Map a non-successful HTTP status to the appropriate [`SecretError`].
@@ -131,6 +147,8 @@ pub struct VaultBackend {
     secret_path: String,
     /// When set, extract this JSON string field from the KV data map.
     field: Option<String>,
+    /// Vault Enterprise namespace — sent as `X-Vault-Namespace` header.
+    namespace: Option<String>,
 }
 
 impl std::fmt::Debug for VaultBackend {
@@ -140,6 +158,7 @@ impl std::fmt::Debug for VaultBackend {
             .field("mount", &self.mount)
             .field("secret_path", &self.secret_path)
             .field("field", &self.field)
+            .field("namespace", &self.namespace)
             .finish_non_exhaustive()
     }
 }
@@ -152,10 +171,14 @@ impl VaultBackend {
     ///
     /// No network calls are made during construction.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "vault" {
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
-                "expected backend `vault`, got `{}`",
+                "expected backend `{BACKEND}`, got `{}`",
                 parsed.backend()
             )));
         }
@@ -193,12 +216,13 @@ impl VaultBackend {
         let token =
             Zeroizing::new(
                 std::env::var("VAULT_TOKEN").map_err(|_| SecretError::Unavailable {
-                    backend: "vault",
+                    backend: BACKEND,
                     source: "VAULT_TOKEN env var not set".into(),
                 })?,
             );
 
         let field = parsed.param("field").map(str::to_owned);
+        let namespace = parsed.param("namespace").map(String::from);
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -214,6 +238,7 @@ impl VaultBackend {
             mount,
             secret_path,
             field,
+            namespace,
         })
     }
 }
@@ -233,16 +258,17 @@ impl SecretStore for VaultBackend {
             encode_path(&self.secret_path)
         );
 
-        let resp = self
+        let mut req = self
             .http_client
             .get(&url)
-            .header("X-Vault-Token", self.token.as_str())
-            .send()
-            .await
-            .map_err(|e| SecretError::Unavailable {
-                backend: "vault",
-                source: e.into(),
-            })?;
+            .header("X-Vault-Token", self.token.as_str());
+        if let Some(ns) = &self.namespace {
+            req = req.header("X-Vault-Namespace", ns);
+        }
+        let resp = req.send().await.map_err(|e| SecretError::Unavailable {
+            backend: BACKEND,
+            source: e.into(),
+        })?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -258,39 +284,63 @@ impl SecretStore for VaultBackend {
             source: e.into(),
         })?;
 
-        // KV v2 response: {"data": {"data": {<secret-map>}, "metadata": {...}}, ...}
-        let json: serde_json::Value = serde_json::from_slice(&body)
-            .map_err(|e| SecretError::DecodeFailed(format!("vault: invalid JSON response: {e}")))?;
-        let data_map = json
-            .get("data")
-            .and_then(|d| d.get("data"))
-            .ok_or_else(|| {
-                SecretError::DecodeFailed("vault: missing data.data in response".into())
-            })?;
-
         if let Some(field) = &self.field {
-            let val = data_map
-                .get(field.as_str())
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    SecretError::DecodeFailed(format!(
-                        "vault: field '{field}' not found or not a string"
-                    ))
+            // With ?field=: parse JSON and extract the named field.
+            // KV v2 response: {"data": {"data": {<secret-map>}, "metadata": {...}}, ...}
+            let json: serde_json::Value =
+                serde_json::from_slice(&body).map_err(|e| {
+                    SecretError::DecodeFailed(format!("vault: invalid JSON response: {e}"))
                 })?;
-            Ok(SecretValue::new(val.as_bytes().to_vec()))
+            let data_map = json
+                .get("data")
+                .and_then(|d| d.get("data"))
+                .ok_or_else(|| {
+                    SecretError::DecodeFailed("vault: missing data.data in response".into())
+                })?;
+            match data_map.get(field.as_str()) {
+                Some(v) => match v.as_str() {
+                    Some(s) => Ok(SecretValue::new(s.as_bytes().to_vec())),
+                    None => Err(SecretError::DecodeFailed(format!(
+                        "vault: field `{field}` exists but is not a string (got {})",
+                        json_type_name(v)
+                    ))),
+                },
+                None => Err(SecretError::NotFound),
+            }
         } else {
+            // Without ?field=: navigate to data.data, take ownership of the
+            // inner object, and serialize it once to bytes.  Previous code
+            // parsed to a Value tree then re-serialized a borrowed sub-value;
+            // now we take() the inner Map out of the tree to avoid cloning.
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&body).map_err(|e| {
+                    SecretError::DecodeFailed(format!("vault: invalid JSON response: {e}"))
+                })?;
+            let inner = json
+                .get_mut("data")
+                .and_then(|d| d.get_mut("data"))
+                .map(serde_json::Value::take);
+            let data_map = match inner {
+                Some(serde_json::Value::Object(m)) => m,
+                _ => {
+                    return Err(SecretError::DecodeFailed(
+                        "vault: missing data.data in response".into(),
+                    ));
+                }
+            };
             // Reject an empty data map — returning b"{}" would silently give
             // callers an unusable secret; fail loudly instead.
-            if data_map.as_object().map(|m| m.is_empty()).unwrap_or(false) {
+            if data_map.is_empty() {
                 return Err(SecretError::DecodeFailed(
                     "vault secret has no fields; use ?field=<name> to request a specific field"
                         .into(),
                 ));
             }
-            let data_bytes = serde_json::to_vec(data_map).map_err(|e| SecretError::Backend {
-                backend: BACKEND,
-                source: e.into(),
-            })?;
+            let data_bytes =
+                serde_json::to_vec(&data_map).map_err(|e| SecretError::Backend {
+                    backend: BACKEND,
+                    source: e.into(),
+                })?;
             Ok(SecretValue::new(data_bytes))
         }
     }
@@ -320,7 +370,7 @@ impl WritableSecretStore for VaultBackend {
             // contain characters that require escaping (e.g. quotes, backslash).
             let body = serde_json::json!({"data": {field: s}});
             serde_json::to_vec(&body).map_err(|e| SecretError::Backend {
-                backend: "vault",
+                backend: BACKEND,
                 source: e.into(),
             })?
         } else {
@@ -350,18 +400,19 @@ impl WritableSecretStore for VaultBackend {
             encode_path(&self.secret_path)
         );
 
-        let resp = self
+        let mut req = self
             .http_client
             .post(&url)
             .header("X-Vault-Token", self.token.as_str())
             .header("Content-Type", "application/json")
-            .body(body_bytes)
-            .send()
-            .await
-            .map_err(|e| SecretError::Unavailable {
-                backend: "vault",
-                source: e.into(),
-            })?;
+            .body(body_bytes);
+        if let Some(ns) = &self.namespace {
+            req = req.header("X-Vault-Namespace", ns);
+        }
+        let resp = req.send().await.map_err(|e| SecretError::Unavailable {
+            backend: BACKEND,
+            source: e.into(),
+        })?;
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -380,19 +431,17 @@ impl WritableSecretStore for VaultBackend {
 }
 
 inventory::submit!(secretx_core::BackendRegistration::new(
-    "vault",
-    |uri: &str| {
-        VaultBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    BACKEND,
+    |uri: &secretx_core::SecretUri| {
+        VaultBackend::from_parsed_uri(uri).map(|b| Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
-    "vault",
-    |uri: &str| {
-        VaultBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    BACKEND,
+    |uri: &secretx_core::SecretUri| {
+        VaultBackend::from_parsed_uri(uri)
+            .map(|b| Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -447,6 +496,36 @@ mod tests {
     fn from_uri_empty_path() {
         let result = VaultBackend::from_uri("secretx:vault");
         assert!(matches!(result, Err(SecretError::InvalidUri(_))));
+    }
+
+    #[test]
+    fn from_uri_namespace_parsed() {
+        if std::env::var("VAULT_TOKEN").is_err() {
+            return; // need a token to construct the backend
+        }
+        let backend = VaultBackend::from_uri(
+            "secretx:vault:secret/prod/api-key?namespace=admin/team-a",
+        )
+        .expect("from_uri should succeed");
+        assert_eq!(
+            backend.namespace.as_deref(),
+            Some("admin/team-a"),
+            "namespace query parameter must be stored"
+        );
+    }
+
+    #[test]
+    fn from_uri_no_namespace() {
+        if std::env::var("VAULT_TOKEN").is_err() {
+            return; // need a token to construct the backend
+        }
+        let backend =
+            VaultBackend::from_uri("secretx:vault:secret/prod/api-key")
+                .expect("from_uri should succeed");
+        assert!(
+            backend.namespace.is_none(),
+            "namespace must be None when not specified in URI"
+        );
     }
 
     // ── error mapping (no Vault server required) ──────────────────────────────

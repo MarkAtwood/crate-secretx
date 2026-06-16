@@ -25,8 +25,6 @@
 use std::sync::Arc;
 
 use aws_sdk_secretsmanager::error::SdkError;
-use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
-use aws_sdk_secretsmanager::operation::put_secret_value::PutSecretValueError;
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 
 const BACKEND: &str = "aws-sm";
@@ -52,7 +50,11 @@ impl AwsSmBackend {
     /// short-lived tokio runtime on a scoped thread so it is safe to call from
     /// both inside and outside an existing tokio runtime.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `{BACKEND}`, got `{}`",
@@ -89,10 +91,26 @@ fn build_client() -> Result<aws_sdk_secretsmanager::Client, SecretError> {
     )
 }
 
-/// Map a `GetSecretValueError` to `SecretError`.
-fn map_get_error(e: SdkError<GetSecretValueError>) -> SecretError {
-    if let Some(svc) = e.as_service_error() {
-        if svc.is_resource_not_found_exception() {
+/// Classify an AWS Secrets Manager SDK error into the appropriate [`SecretError`].
+///
+/// `is_not_found` returns `true` when the service error is a
+/// `ResourceNotFoundException` (the concrete type varies per operation).
+/// `is_internal` returns `true` for `InternalServiceError`.
+fn classify_sm_sdk_error<E>(
+    sdk_err: SdkError<E>,
+    is_not_found: impl FnOnce(&E) -> bool,
+    is_internal: impl FnOnce(&E) -> bool,
+) -> SecretError
+where
+    E: std::error::Error
+        + std::fmt::Display
+        + aws_sdk_secretsmanager::error::ProvideErrorMetadata
+        + Send
+        + Sync
+        + 'static,
+{
+    if let Some(svc) = sdk_err.as_service_error() {
+        if is_not_found(svc) {
             return SecretError::NotFound;
         }
         // ThrottlingException and InternalServiceError are transient; retry may succeed.
@@ -101,7 +119,7 @@ fn map_get_error(e: SdkError<GetSecretValueError>) -> SecretError {
         let code = svc.meta().code().unwrap_or("");
         if code == "ThrottlingException"
             || code == "RequestThrottledException"
-            || svc.is_internal_service_error()
+            || is_internal(svc)
         {
             return SecretError::Unavailable {
                 backend: BACKEND,
@@ -116,37 +134,7 @@ fn map_get_error(e: SdkError<GetSecretValueError>) -> SecretError {
     // Network failure, timeout, dispatch error — transient; retry is appropriate.
     SecretError::Unavailable {
         backend: BACKEND,
-        source: e.into(),
-    }
-}
-
-/// Map a `PutSecretValueError` to `SecretError`.
-fn map_put_error(e: SdkError<PutSecretValueError>) -> SecretError {
-    if let Some(svc) = e.as_service_error() {
-        if svc.is_resource_not_found_exception() {
-            return SecretError::NotFound;
-        }
-        // ThrottlingException and InternalServiceError are transient; retry may succeed.
-        // All other service errors are permanent.
-        let code = svc.meta().code().unwrap_or("");
-        if code == "ThrottlingException"
-            || code == "RequestThrottledException"
-            || svc.is_internal_service_error()
-        {
-            return SecretError::Unavailable {
-                backend: BACKEND,
-                source: svc.to_string().into(),
-            };
-        }
-        return SecretError::Backend {
-            backend: BACKEND,
-            source: svc.to_string().into(),
-        };
-    }
-    // Network failure, timeout, dispatch error — transient; retry is appropriate.
-    SecretError::Unavailable {
-        backend: BACKEND,
-        source: e.into(),
+        source: sdk_err.into(),
     }
 }
 
@@ -164,7 +152,13 @@ async fn fetch(
         .secret_id(name)
         .send()
         .await
-        .map_err(map_get_error)?;
+        .map_err(|e| {
+            classify_sm_sdk_error(
+                e,
+                |svc| svc.is_resource_not_found_exception(),
+                |svc| svc.is_internal_service_error(),
+            )
+        })?;
 
     if let Some(s) = resp.secret_string() {
         match field {
@@ -236,7 +230,13 @@ impl WritableSecretStore for AwsSmBackend {
                     .secret_string(s)
                     .send()
                     .await
-                    .map_err(map_put_error)?;
+                    .map_err(|e| {
+                        classify_sm_sdk_error(
+                            e,
+                            |svc| svc.is_resource_not_found_exception(),
+                            |svc| svc.is_internal_service_error(),
+                        )
+                    })?;
             }
             Err(_) => {
                 // ZEROIZATION GAP: Blob::new copies bytes into SDK-owned heap
@@ -250,7 +250,13 @@ impl WritableSecretStore for AwsSmBackend {
                     .secret_binary(blob)
                     .send()
                     .await
-                    .map_err(map_put_error)?;
+                    .map_err(|e| {
+                        classify_sm_sdk_error(
+                            e,
+                            |svc| svc.is_resource_not_found_exception(),
+                            |svc| svc.is_internal_service_error(),
+                        )
+                    })?;
             }
         }
         Ok(())
@@ -259,31 +265,27 @@ impl WritableSecretStore for AwsSmBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "aws-sm",
-    |uri: &str| {
-        AwsSmBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = AwsSmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "aws-sm",
-    |uri: &str| {
+    |uri: &secretx_core::SecretUri| {
         // Reject ?field= at construction time: put() cannot write a single
         // JSON field without a read-modify-write race.  Fail early rather than
         // returning InvalidUri from put() at rotation time.
-        if secretx_core::SecretUri::parse(uri)?
-            .param("field")
-            .is_some()
-        {
+        if uri.param("field").is_some() {
             return Err(secretx_core::SecretError::InvalidUri(
                 "aws-sm writable backend does not support ?field=; \
                  put() requires the full secret URI without a field selector"
                     .into(),
             ));
         }
-        AwsSmBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+        let b = AwsSmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 

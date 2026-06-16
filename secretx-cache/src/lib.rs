@@ -43,13 +43,13 @@ struct CachedEntry {
 /// Each `CachingStore` instance caches exactly one value — the secret
 /// identified by the URI passed to the inner backend's `from_uri`. TTL
 /// expiry triggers a fresh fetch from the backend on the next `get` call.
-pub struct CachingStore<S: SecretStore> {
+pub struct CachingStore<S: SecretStore + ?Sized> {
     inner: Arc<S>,
     ttl: Duration,
     cache: Arc<std::sync::Mutex<Option<CachedEntry>>>,
 }
 
-impl<S: SecretStore> std::fmt::Debug for CachingStore<S> {
+impl<S: SecretStore + ?Sized> std::fmt::Debug for CachingStore<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CachingStore")
             .field("ttl", &self.ttl)
@@ -58,7 +58,7 @@ impl<S: SecretStore> std::fmt::Debug for CachingStore<S> {
     }
 }
 
-impl<S: SecretStore> CachingStore<S> {
+impl<S: SecretStore + ?Sized> CachingStore<S> {
     /// Create a new [`CachingStore`] wrapping `inner` with the given `ttl`.
     ///
     /// Pass [`Duration::ZERO`] to bypass caching (all calls go straight to the
@@ -73,7 +73,7 @@ impl<S: SecretStore> CachingStore<S> {
 }
 
 #[async_trait::async_trait]
-impl<S: SecretStore> SecretStore for CachingStore<S> {
+impl<S: SecretStore + ?Sized> SecretStore for CachingStore<S> {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         if self.ttl == Duration::ZERO {
             return self.inner.get().await;
@@ -83,8 +83,16 @@ impl<S: SecretStore> SecretStore for CachingStore<S> {
         {
             let cache = self.cache.lock().expect("cache mutex poisoned");
             if let Some(entry) = cache.as_ref() {
-                if entry.fetched_at.elapsed() < self.ttl {
-                    return Ok(SecretValue::new(entry.bytes.to_vec()));
+                // Use checked_add to avoid panic when ttl is Duration::MAX or
+                // close to it — overflow means "never expires".
+                let expired = match entry.fetched_at.checked_add(self.ttl) {
+                    Some(expiry) => Instant::now() >= expiry,
+                    None => false,
+                };
+                if !expired {
+                    return Ok(SecretValue::from_zeroizing(Zeroizing::new(
+                        entry.bytes.to_vec(),
+                    )));
                 }
             }
         }
@@ -122,7 +130,7 @@ impl<S: SecretStore> SecretStore for CachingStore<S> {
 }
 
 #[async_trait::async_trait]
-impl<S: WritableSecretStore> WritableSecretStore for CachingStore<S> {
+impl<S: WritableSecretStore + ?Sized> WritableSecretStore for CachingStore<S> {
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         // Copy bytes before consuming value (SecretValue has no Clone).
         let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
@@ -244,6 +252,24 @@ mod tests {
         // Subsequent get should be served from cache (only 1 inner call total).
         let v2 = store.get().await.unwrap();
         assert_eq!(v2.as_bytes(), b"refreshed");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn max_ttl_does_not_panic() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let fake = FakeStore {
+            call_count: call_count.clone(),
+            value: b"forever",
+        };
+        let store = CachingStore::new(Arc::new(fake), Duration::MAX);
+
+        let v1 = store.get().await.unwrap();
+        assert_eq!(v1.as_bytes(), b"forever");
+
+        // Second call must be served from cache without panic.
+        let v2 = store.get().await.unwrap();
+        assert_eq!(v2.as_bytes(), b"forever");
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 }

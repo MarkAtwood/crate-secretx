@@ -2,9 +2,9 @@
 //!
 //! # Integration test status
 //!
-//! Unit tests (URI parsing, error mapping) pass without a keyring daemon.
+//! Unit tests (URI parsing, error mapping) pass without credentials.
 //! The integration test (`SECRETX_KEYRING_INTEGRATION_TESTS=1`) uses the Linux
-//! kernel keyring directly — no daemon required. Run with:
+//! kernel keyring directly (no daemon required). Run with:
 //!
 //! ```sh
 //! SECRETX_KEYRING_INTEGRATION_TESTS=1 cargo test -p secretx-keyring
@@ -14,7 +14,10 @@
 //! [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html),
 //! which survives across logout/login sessions for a configurable window
 //! (default: a few days, set by `/proc/sys/kernel/keys/persistent_keyring_expiry`).
-//! Secrets do **not** survive reboots. No daemon is needed.
+//! Secrets do **not** survive reboots.
+//!
+//! See [`keyutils(7)`](https://www.man7.org/linux/man-pages/man7/keyutils.7.html)
+//! for the kernel keyutils subsystem overview.
 //!
 //! **Persistent keyring probe**: `get` and `put` probe `keyctl_get_persistent`
 //! before each operation. If the kernel does not support
@@ -49,6 +52,34 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSec
 use zeroize::Zeroizing;
 
 const BACKEND: &str = "keyring";
+
+/// Map a `keyring::Error` into the appropriate `SecretError` variant.
+///
+/// - `NoEntry` → `NotFound` (expected on `get`, should not occur on `put`).
+/// - `NoStorageAccess` → `Unavailable` (transient; the inner platform error
+///   is forwarded directly).
+/// - Everything else → `Backend` (permanent).
+fn map_keyring_error(e: keyring::Error) -> SecretError {
+    match e {
+        keyring::Error::NoEntry => SecretError::NotFound,
+        keyring::Error::NoStorageAccess(inner) => SecretError::Unavailable {
+            backend: BACKEND,
+            source: inner,
+        },
+        other => SecretError::Backend {
+            backend: BACKEND,
+            source: other.into(),
+        },
+    }
+}
+
+/// Map a `tokio::task::JoinError` into `SecretError::Backend`.
+fn map_join_error(e: tokio::task::JoinError) -> SecretError {
+    SecretError::Backend {
+        backend: BACKEND,
+        source: e.into(),
+    }
+}
 
 /// Probe that the kernel persistent keyring is reachable.
 ///
@@ -106,7 +137,11 @@ impl KeyringBackend {
     /// the path is empty, or the path contains no `/` separator (both
     /// `service` and `account` must be non-empty).
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `keyring`, got `{}`",
@@ -166,32 +201,18 @@ impl SecretStore for KeyringBackend {
             #[cfg(target_os = "linux")]
             require_persistent_keyring()?;
             let entry =
-                keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                })?;
+                keyring::Entry::new(&service, &account).map_err(map_keyring_error)?;
             // ZEROIZATION GAP: keyring crate returns plain String from the OS
             // keychain.  `pw.into_bytes()` is zero-copy (reuses the same heap
             // allocation), so the buffer enters Zeroizing immediately.  The
             // keychain's own internal copy is outside our control.
-            match entry.get_password() {
-                Ok(pw) => Ok(SecretValue::new(pw.into_bytes())),
-                Err(keyring::Error::NoEntry) => Err(SecretError::NotFound),
-                Err(keyring::Error::NoStorageAccess(e)) => Err(SecretError::Unavailable {
-                    backend: BACKEND,
-                    source: e,
-                }),
-                Err(e) => Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                }),
-            }
+            entry
+                .get_password()
+                .map(|pw| SecretValue::new(pw.into_bytes()))
+                .map_err(map_keyring_error)
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: e.into(),
-        })?
+        .map_err(map_join_error)?
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
@@ -204,7 +225,7 @@ impl WritableSecretStore for KeyringBackend {
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         // Decode to UTF-8 before entering spawn_blocking (no I/O needed here).
         // Wrap in Zeroizing so the plaintext copy is zeroed when the closure returns.
-        let s = Zeroizing::new(
+        let password = Zeroizing::new(
             std::str::from_utf8(value.as_bytes())
                 .map_err(|_| {
                     SecretError::DecodeFailed("keyring backend requires UTF-8 secret values".into())
@@ -216,7 +237,7 @@ impl WritableSecretStore for KeyringBackend {
         tokio::task::spawn_blocking(move || {
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (&service, &account, &s);
+                let _ = (&service, &account, &password);
                 return Err(SecretError::Unavailable {
                     backend: BACKEND,
                     source: "secretx-keyring requires Linux (kernel persistent keyring); \
@@ -227,45 +248,29 @@ impl WritableSecretStore for KeyringBackend {
             #[cfg(target_os = "linux")]
             require_persistent_keyring()?;
             let entry =
-                keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: BACKEND,
-                    source: e.into(),
-                })?;
-            entry.set_password(&s).map_err(|e| match e {
-                keyring::Error::NoStorageAccess(inner) => SecretError::Unavailable {
-                    backend: BACKEND,
-                    source: inner,
-                },
-                other => SecretError::Backend {
-                    backend: BACKEND,
-                    source: other.into(),
-                },
-            })
+                keyring::Entry::new(&service, &account).map_err(map_keyring_error)?;
+            entry.set_password(&password).map_err(map_keyring_error)
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: e.into(),
-        })?
+        .map_err(map_join_error)?
     }
 }
 
 #[cfg(target_os = "linux")]
 inventory::submit!(secretx_core::BackendRegistration::new(
     "keyring",
-    |uri: &str| {
-        KeyringBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = KeyringBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 #[cfg(target_os = "linux")]
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "keyring",
-    |uri: &str| {
-        KeyringBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = KeyringBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 

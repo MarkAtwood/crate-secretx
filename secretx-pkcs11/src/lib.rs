@@ -1,5 +1,9 @@
 //! PKCS#11 HSM backend for secretx.
 //!
+//! Requires a **PKCS#11 v2.40+** compliant library. Older libraries may work
+//! for basic `get`/`put` operations but `public_key_der()` relies on
+//! `CKA_PUBLIC_KEY_INFO`, which was introduced in v2.40.
+//!
 //! URI: `secretx:pkcs11:<slot>/<label>[?lib=<path>&pin=<pin>]`
 //!
 //! - `slot`  — numeric index into the list of slots that have a token present
@@ -10,6 +14,15 @@
 //! - `pin`   — token PIN for login.  Falls back to the `PKCS11_PIN`
 //!   environment variable if omitted.  Use `?pin=` when multiple tokens
 //!   with different PINs are in use.
+//!
+//! # Supported algorithms
+//!
+//! | Key type | Algorithm | Mechanism |
+//! |----------|-----------|-----------|
+//! | EC P-256 | `EcdsaP256Sha256` | `CKM_ECDSA_SHA256` |
+//! | RSA-2048 | `RsaPss2048Sha256` | `CKM_SHA256_RSA_PKCS_PSS` (MGF1-SHA-256, salt=32) |
+//!
+//! Other key types and sizes (e.g. P-384, RSA-4096) are rejected at runtime.
 //!
 //! # Examples
 //!
@@ -90,6 +103,28 @@ fn classify_ck(e: CkError) -> SecretError {
     }
 }
 
+/// Shorthand for constructing a [`SecretError::Backend`] with `backend: "pkcs11"`.
+fn pkcs11_err(msg: impl Into<String>) -> SecretError {
+    SecretError::Backend {
+        backend: BACKEND,
+        source: msg.into().into(),
+    }
+}
+
+/// Extract the first attribute matching a variant from a list of attributes.
+///
+/// Usage: `extract_attr!(attrs, Attribute::Value(v) => v.clone())`
+///
+/// Returns `None` if no attribute matches.
+macro_rules! extract_attr {
+    ($attrs:expr, $pat:pat => $expr:expr) => {
+        $attrs.into_iter().find_map(|attr| match attr {
+            $pat => Some($expr),
+            _ => None,
+        })
+    };
+}
+
 /// PKCS#11 backend that implements both [`SecretStore`] and [`SigningBackend`].
 ///
 /// Secrets are stored as `CKO_DATA` objects; signing keys are `CKO_PRIVATE_KEY`
@@ -99,6 +134,13 @@ pub struct Pkcs11Backend {
     slot: cryptoki::slot::Slot,
     label: String,
     user_pin: Option<Zeroizing<String>>,
+    /// Canonical path of the PKCS#11 library, used to look up the cache entry
+    /// in [`pkcs11_ctx_cache`] during [`Drop`].
+    lib_path: PathBuf,
+    /// Cached read-only session, opened lazily on first use and reused across
+    /// operations.  Wrapped in `Arc<Mutex<_>>` so `spawn_blocking` closures can
+    /// borrow it without `&self` being `'static`.
+    ro_session: Arc<Mutex<Option<cryptoki::session::Session>>>,
     // Cached algorithm, populated by sign() on first call.  algorithm() reads
     // this cache but never performs I/O itself.
     // Arc<OnceLock> so the cache can be shared with spawn_blocking closures
@@ -109,10 +151,42 @@ pub struct Pkcs11Backend {
 impl std::fmt::Debug for Pkcs11Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pkcs11Backend")
+            .field("lib_path", &self.lib_path)
             .field("slot", &self.slot)
             .field("label", &self.label)
             .field("has_pin", &self.user_pin.is_some())
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Pkcs11Backend {
+    /// Close the cached session (if any) and, when this is the last backend
+    /// using a given PKCS#11 library, remove the context from the process-wide
+    /// cache and call `C_Finalize`.
+    fn drop(&mut self) {
+        // Drop the cached session first so C_CloseSession runs while the
+        // context is still alive.
+        if let Ok(mut guard) = self.ro_session.lock() {
+            drop(guard.take());
+        }
+
+        // Try to remove the context from the cache.  If we're the sole
+        // remaining owner (strong_count == 2: us + cache), removing from
+        // the cache drops the cache's Arc, leaving ours as the only one.
+        // Arc::try_unwrap then succeeds and we can call finalize().
+        if let Ok(mut cache) = pkcs11_ctx_cache().lock() {
+            if Arc::strong_count(&self.ctx) == 2 {
+                if let Some(removed) = cache.remove(&self.lib_path) {
+                    drop(cache); // release the lock before finalize
+                    // removed + self.ctx are the only two Arcs.  self.ctx
+                    // will be dropped after this fn returns, so try_unwrap
+                    // on `removed` succeeds.
+                    if let Ok(ctx) = Arc::try_unwrap(removed) {
+                        let _ = ctx.finalize();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -129,8 +203,19 @@ impl Pkcs11Backend {
     /// take hundreds of milliseconds for network-backed HSMs (CloudHSM,
     /// GCP KMS PKCS#11).  Wrap the first call in
     /// [`tokio::task::spawn_blocking`] if calling from an async context.
+    ///
+    /// # Errors
+    ///
+    /// - [`SecretError::InvalidUri`] — wrong backend, missing or non-numeric
+    ///   slot, empty label, or missing `?lib=` with no `PKCS11_LIB` env var.
+    /// - [`SecretError::Backend`] — PKCS#11 library load (`C_Initialize`)
+    ///   failed, or the requested slot index exceeds the number of tokens.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != "pkcs11" {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `pkcs11`, got `{}`",
@@ -161,10 +246,7 @@ impl Pkcs11Backend {
         let ctx = {
             let mut cache = pkcs11_ctx_cache()
                 .lock()
-                .map_err(|_| SecretError::Backend {
-                    backend: BACKEND,
-                    source: "pkcs11 context cache mutex poisoned".into(),
-                })?;
+                .map_err(|_| pkcs11_err("pkcs11 context cache mutex poisoned"))?;
             if let Some(existing) = cache.get(&canon) {
                 Arc::clone(existing)
             } else {
@@ -173,7 +255,7 @@ impl Pkcs11Backend {
                     .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
                     .map_err(classify_ck)?;
                 let arc = Arc::new(new_ctx);
-                cache.insert(canon, Arc::clone(&arc));
+                cache.insert(canon.clone(), Arc::clone(&arc));
                 arc
             }
         };
@@ -184,13 +266,11 @@ impl Pkcs11Backend {
         let slot = slots
             .get(slot_idx)
             .copied()
-            .ok_or_else(|| SecretError::Backend {
-                backend: BACKEND,
-                source: format!(
+            .ok_or_else(|| {
+                pkcs11_err(format!(
                     "slot index {slot_idx} not found (only {} slot(s) with a token)",
                     slots.len()
-                )
-                .into(),
+                ))
             })?;
 
         // Per-URI ?pin= takes precedence over the process-global PKCS11_PIN
@@ -203,8 +283,10 @@ impl Pkcs11Backend {
         Ok(Self {
             ctx,
             slot,
-            label,
+            label: label.to_string(),
             user_pin,
+            lib_path: canon,
+            ro_session: Arc::new(Mutex::new(None)),
             algorithm_cache: Arc::new(std::sync::OnceLock::new()),
         })
     }
@@ -226,15 +308,11 @@ impl Pkcs11Backend {
             .find_objects(&template)
             .map_err(classify_ck)?;
         if handles.len() > 1 {
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: format!(
-                    "found {} objects with label `{label}` and class {class:?}; \
-                     expected exactly one (clean up duplicates on the token)",
-                    handles.len()
-                )
-                .into(),
-            });
+            return Err(pkcs11_err(format!(
+                "found {} objects with label `{label}` and class {class:?}; \
+                 expected exactly one (clean up duplicates on the token)",
+                handles.len()
+            )));
         }
         handles.into_iter().next().ok_or(SecretError::NotFound)
     }
@@ -250,27 +328,17 @@ impl Pkcs11Backend {
             .get_attributes(handle, &[AttributeType::ModulusBits])
             .map_err(classify_ck)?;
 
-        for attr in attrs {
-            if let Attribute::ModulusBits(bits) = attr {
-                if u64::from(bits) == 2048 {
-                    return Ok(SigningAlgorithm::RsaPss2048Sha256);
-                }
-                return Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: format!(
-                        "unsupported RSA key size: {bits} bits; only 2048-bit RSA is supported"
-                    )
-                    .into(),
-                });
-            }
-        }
+        let bits = extract_attr!(attrs, Attribute::ModulusBits(b) => b).ok_or_else(|| {
+            pkcs11_err("RSA private key is missing CKA_MODULUS_BITS; cannot determine key size")
+        })?;
 
-        Err(SecretError::Backend {
-            backend: BACKEND,
-            source: "RSA private key is missing CKA_MODULUS_BITS; \
-                     cannot determine key size"
-                .into(),
-        })
+        if u64::from(bits) == 2048 {
+            Ok(SigningAlgorithm::RsaPss2048Sha256)
+        } else {
+            Err(pkcs11_err(format!(
+                "unsupported RSA key size: {bits} bits; only 2048-bit RSA is supported"
+            )))
+        }
     }
 
     /// Read `CKA_EC_PARAMS` from an EC private key and map to a [`SigningAlgorithm`].
@@ -287,26 +355,17 @@ impl Pkcs11Backend {
             .get_attributes(handle, &[AttributeType::EcParams])
             .map_err(classify_ck)?;
 
-        for ec_attr in ec_attrs {
-            if let Attribute::EcParams(params) = ec_attr {
-                if params == P256_OID {
-                    return Ok(SigningAlgorithm::EcdsaP256Sha256);
-                }
-                return Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: format!(
-                        "unsupported EC curve (CKA_EC_PARAMS = {:02x?}); only P-256 is supported",
-                        params
-                    )
-                    .into(),
-                });
-            }
-        }
+        let params = extract_attr!(ec_attrs, Attribute::EcParams(p) => p)
+            .ok_or_else(|| pkcs11_err("EC private key is missing CKA_EC_PARAMS"))?;
 
-        Err(SecretError::Backend {
-            backend: BACKEND,
-            source: "EC private key is missing CKA_EC_PARAMS".into(),
-        })
+        if params == P256_OID {
+            Ok(SigningAlgorithm::EcdsaP256Sha256)
+        } else {
+            Err(pkcs11_err(format!(
+                "unsupported EC curve (CKA_EC_PARAMS = {:02x?}); only P-256 is supported",
+                params
+            )))
+        }
     }
 }
 
@@ -349,6 +408,41 @@ fn pkcs11_rw_session(
     Ok(session)
 }
 
+/// Take the cached read-only session or open a new one.
+///
+/// Callers must return the session via [`return_ro_session`] after use so
+/// subsequent operations can reuse it.
+fn take_ro_session(
+    cache: &Mutex<Option<cryptoki::session::Session>>,
+    ctx: &Pkcs11,
+    slot: cryptoki::slot::Slot,
+    user_pin: Option<&Zeroizing<String>>,
+) -> Result<cryptoki::session::Session, SecretError> {
+    let cached = cache
+        .lock()
+        .map_err(|_| pkcs11_err("session cache mutex poisoned"))?
+        .take();
+    if let Some(s) = cached {
+        return Ok(s);
+    }
+    pkcs11_ro_session(ctx, slot, user_pin)
+}
+
+/// Return a session to the cache for reuse.
+fn return_ro_session(
+    cache: &Mutex<Option<cryptoki::session::Session>>,
+    session: cryptoki::session::Session,
+) {
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(session);
+    }
+}
+
+/// Map a [`tokio::task::JoinError`] to a [`SecretError::Backend`].
+fn map_join_err(e: tokio::task::JoinError) -> SecretError {
+    pkcs11_err(format!("task join error: {e}"))
+}
+
 /// Detect the signing algorithm of the private key with `label` in the given slot.
 ///
 /// Opens a read-only session, finds the `CKO_PRIVATE_KEY` object by label, and
@@ -370,49 +464,29 @@ fn pkcs11_detect_algorithm(
         .get_attributes(handle, &[AttributeType::KeyType])
         .map_err(classify_ck)?;
 
-    for attr in attrs {
-        if let Attribute::KeyType(kt) = attr {
-            if kt == KeyType::EC {
-                return Pkcs11Backend::detect_ec_algorithm(&session, handle);
-            } else if kt == KeyType::RSA {
-                return Pkcs11Backend::detect_rsa_algorithm(&session, handle);
-            } else {
-                return Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: format!(
-                        "unsupported key type: {kt}; \
-                         this backend supports only EC P-256 and RSA-2048"
-                    )
-                    .into(),
-                });
-            }
-        }
-    }
+    let kt = extract_attr!(attrs, Attribute::KeyType(kt) => kt)
+        .ok_or_else(|| pkcs11_err("could not determine key type from CKA_KEY_TYPE"))?;
 
-    Err(SecretError::Backend {
-        backend: BACKEND,
-        source: "could not determine key type from CKA_KEY_TYPE".into(),
-    })
+    match kt {
+        KeyType::EC => Pkcs11Backend::detect_ec_algorithm(&session, handle),
+        KeyType::RSA => Pkcs11Backend::detect_rsa_algorithm(&session, handle),
+        _ => Err(pkcs11_err(format!(
+            "unsupported key type: {kt}; this backend supports only EC P-256 and RSA-2048"
+        ))),
+    }
 }
 
 /// Split a path of the form `<slot>/<label>` into its two parts.
-fn split_path(path: &str) -> Result<(&str, String), SecretError> {
-    match path.find('/') {
-        Some(i) => {
-            let slot = &path[..i];
-            let label = &path[i + 1..];
-            if slot.is_empty() || label.is_empty() {
-                Err(SecretError::InvalidUri(
-                    "pkcs11 URI path must be `<slot>/<label>`".into(),
-                ))
-            } else {
-                Ok((slot, label.to_string()))
-            }
-        }
-        None => Err(SecretError::InvalidUri(
+fn split_path(path: &str) -> Result<(&str, &str), SecretError> {
+    let (slot, label) = path.split_once('/').ok_or_else(|| {
+        SecretError::InvalidUri("pkcs11 URI path must be `<slot>/<label>`".into())
+    })?;
+    if slot.is_empty() || label.is_empty() {
+        return Err(SecretError::InvalidUri(
             "pkcs11 URI path must be `<slot>/<label>`".into(),
-        )),
+        ));
     }
+    Ok((slot, label))
 }
 
 #[async_trait::async_trait]
@@ -426,31 +500,23 @@ impl SecretStore for Pkcs11Backend {
         let slot = self.slot;
         let label = self.label.clone();
         let user_pin = self.user_pin.clone();
+        let sess_cache = Arc::clone(&self.ro_session);
 
         tokio::task::spawn_blocking(move || -> Result<SecretValue, SecretError> {
-            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
-            let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::DATA)?;
-
-            let attrs = session
-                .get_attributes(handle, &[AttributeType::Value])
-                .map_err(classify_ck)?;
-
-            for attr in attrs {
-                if let Attribute::Value(bytes) = attr {
-                    return Ok(SecretValue::new(bytes));
-                }
-            }
-
-            Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "CKA_VALUE attribute missing on data object".into(),
-            })
+            let session = take_ro_session(&sess_cache, &ctx, slot, user_pin.as_ref())?;
+            let result = (|| {
+                let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::DATA)?;
+                let attrs = session
+                    .get_attributes(handle, &[AttributeType::Value])
+                    .map_err(classify_ck)?;
+                extract_attr!(attrs, Attribute::Value(bytes) => SecretValue::new(bytes))
+                    .ok_or_else(|| pkcs11_err("CKA_VALUE attribute missing on data object"))
+            })();
+            return_ro_session(&sess_cache, session);
+            result
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("task join error: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
     /// Re-fetch the secret from the HSM (no caching layer here).
@@ -478,6 +544,14 @@ impl WritableSecretStore for Pkcs11Backend {
     ///   next `get()` may return either the old or the new value (PKCS#11 does
     ///   not define object enumeration order). This resolves on the next
     ///   successful `put()` which removes all stale handles.
+    ///
+    /// **Multi-writer concurrency**: concurrent `put()` calls from separate
+    /// processes (or separate `Pkcs11Backend` instances) are not serialised.
+    /// PKCS#11 does not provide advisory locking. If two writers race, both
+    /// may create new objects before either destroys the old ones, leaving
+    /// duplicate objects on the token. The next single-writer `put()` cleans
+    /// up all stale handles. If multi-writer atomicity is required, use an
+    /// external coordination mechanism (e.g. a file lock or database row lock).
     ///
     /// All PKCS#11 calls are dispatched via `tokio::task::spawn_blocking` to
     /// avoid blocking the async executor.
@@ -540,10 +614,7 @@ impl WritableSecretStore for Pkcs11Backend {
             Ok(())
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("task join error: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 }
 
@@ -556,7 +627,7 @@ impl SigningBackend for Pkcs11Backend {
     /// - RSA keys → `CKM_SHA256_RSA_PKCS_PSS` with SHA-256 / MGF1-SHA-256 / salt=32
     ///
     /// All PKCS#11 calls are dispatched via `tokio::task::spawn_blocking` to
-    /// avoid blocking the async executor.  Algorithm detection (cold OnceLock)
+    /// avoid blocking the async executor.  Algorithm detection (cold `OnceLock`)
     /// also happens inside the blocking task on the first call.
     async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SecretError> {
         // Fast path: if the algorithm was already detected, avoid an extra read
@@ -568,6 +639,7 @@ impl SigningBackend for Pkcs11Backend {
         let label = self.label.clone();
         let user_pin = self.user_pin.clone();
         let algo_cache = Arc::clone(&self.algorithm_cache);
+        let sess_cache = Arc::clone(&self.ro_session);
         let message = message.to_vec();
 
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>, SecretError> {
@@ -581,37 +653,35 @@ impl SigningBackend for Pkcs11Backend {
                 detected
             };
 
-            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
-            let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::PRIVATE_KEY)?;
-
-            match algo {
-                SigningAlgorithm::EcdsaP256Sha256 => session
-                    .sign(&Mechanism::EcdsaSha256, handle, &message)
-                    .map_err(classify_ck),
-                SigningAlgorithm::RsaPss2048Sha256 => {
-                    let pss = PkcsPssParams {
-                        hash_alg: MechanismType::SHA256,
-                        mgf: PkcsMgfType::MGF1_SHA256,
-                        s_len: 32u64.into(),
-                    };
-                    session
-                        .sign(&Mechanism::Sha256RsaPkcsPss(pss), handle, &message)
-                        .map_err(classify_ck)
+            let session = take_ro_session(&sess_cache, &ctx, slot, user_pin.as_ref())?;
+            let result = (|| {
+                let handle =
+                    Pkcs11Backend::find_object(&session, &label, ObjectClass::PRIVATE_KEY)?;
+                match algo {
+                    SigningAlgorithm::EcdsaP256Sha256 => session
+                        .sign(&Mechanism::EcdsaSha256, handle, &message)
+                        .map_err(classify_ck),
+                    SigningAlgorithm::RsaPss2048Sha256 => {
+                        let pss = PkcsPssParams {
+                            hash_alg: MechanismType::SHA256,
+                            mgf: PkcsMgfType::MGF1_SHA256,
+                            s_len: 32u64.into(),
+                        };
+                        session
+                            .sign(&Mechanism::Sha256RsaPkcsPss(pss), handle, &message)
+                            .map_err(classify_ck)
+                    }
+                    _ => Err(pkcs11_err(format!("unsupported signing algorithm: {algo:?}"))),
                 }
-                _ => Err(SecretError::Backend {
-                    backend: BACKEND,
-                    source: format!("unsupported signing algorithm: {algo:?}").into(),
-                }),
-            }
+            })();
+            return_ro_session(&sess_cache, session);
+            result
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("task join error: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
-    /// Return the DER-encoded SubjectPublicKeyInfo of the matching public key.
+    /// Return the DER-encoded `SubjectPublicKeyInfo` of the matching public key.
     ///
     /// Reads `CKA_PUBLIC_KEY_INFO` from the `CKO_PUBLIC_KEY` object (PKCS#11
     /// v2.40+ tokens store the SPKI directly in this attribute).
@@ -627,34 +697,29 @@ impl SigningBackend for Pkcs11Backend {
         let slot = self.slot;
         let label = self.label.clone();
         let user_pin = self.user_pin.clone();
+        let sess_cache = Arc::clone(&self.ro_session);
 
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>, SecretError> {
-            let session = pkcs11_ro_session(&ctx, slot, user_pin.as_ref())?;
-            let handle = Pkcs11Backend::find_object(&session, &label, ObjectClass::PUBLIC_KEY)?;
-
-            let attrs = session
-                .get_attributes(handle, &[AttributeType::PublicKeyInfo])
-                .map_err(classify_ck)?;
-
-            for attr in attrs {
-                if let Attribute::PublicKeyInfo(der) = attr {
-                    return Ok(der);
-                }
-            }
-
-            Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "CKA_PUBLIC_KEY_INFO attribute missing on public key object; \
+            let session = take_ro_session(&sess_cache, &ctx, slot, user_pin.as_ref())?;
+            let result = (|| {
+                let handle =
+                    Pkcs11Backend::find_object(&session, &label, ObjectClass::PUBLIC_KEY)?;
+                let attrs = session
+                    .get_attributes(handle, &[AttributeType::PublicKeyInfo])
+                    .map_err(classify_ck)?;
+                extract_attr!(attrs, Attribute::PublicKeyInfo(der) => der).ok_or_else(|| {
+                    pkcs11_err(
+                        "CKA_PUBLIC_KEY_INFO attribute missing on public key object; \
                          this token may not populate SPKI (older YubiHSM, Nitrokey, \
-                         or pre-PKCS#11-v2.40 firmware)"
-                    .into(),
-            })
+                         or pre-PKCS#11-v2.40 firmware)",
+                    )
+                })
+            })();
+            return_ro_session(&sess_cache, session);
+            result
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("task join error: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
     /// Returns the cached algorithm, or errors if the cache is cold.
@@ -666,37 +731,36 @@ impl SigningBackend for Pkcs11Backend {
         self.algorithm_cache
             .get()
             .copied()
-            .ok_or_else(|| SecretError::Backend {
-                backend: BACKEND,
-                source: "algorithm not yet detected; call sign() or public_key_der() first \
-                     to warm the cache"
-                    .into(),
+            .ok_or_else(|| {
+                pkcs11_err(
+                    "algorithm not yet detected; call sign() or public_key_der() first \
+                     to warm the cache",
+                )
             })
     }
 }
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "pkcs11",
-    |uri: &str| {
-        Pkcs11Backend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = Pkcs11Backend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::SigningBackendRegistration::new(
     "pkcs11",
-    |uri: &str| {
-        Pkcs11Backend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
+    |uri: &secretx_core::SecretUri| {
+        let b = Pkcs11Backend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SigningBackend>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "pkcs11",
-    |uri: &str| {
-        Pkcs11Backend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = Pkcs11Backend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 

@@ -38,7 +38,13 @@
 //! subsequent calls. `refresh()` invalidates that cache and re-scans.
 //!
 //! `put()` overwrites an existing object (same label → same NVM ID) or creates
-//! a new one (first unused NVM ID). wolfHSM NVM overwrite is not atomic: the
+//! a new one (first unused NVM ID).
+//!
+//! **Maximum value size**: 65 535 bytes (~64 KiB). wolfHSM NVM metadata uses
+//! a `u16` length field (`whNvmMetadata.len`), so `put()` returns
+//! [`SecretError::Backend`] if the value exceeds this limit.
+//!
+//! wolfHSM NVM overwrite is not atomic: the
 //! old object is deleted before the new one is added. If the add fails after a
 //! successful delete, [`SecretError::DataLost`] is returned with the NVM ID
 //! that was destroyed. This matches the wolfhsm crate's `nvm_overwrite`
@@ -69,6 +75,12 @@ const BACKEND: &str = "wolfhsm";
 /// Maximum NVM label length in bytes (`WH_NVM_LABEL_LEN` from wolfHSM headers).
 const NVM_LABEL_MAX: usize = 24;
 
+/// Maximum NVM data object size in bytes.
+///
+/// wolfHSM NVM metadata uses a `u16` length field (`whNvmMetadata.len`),
+/// limiting data objects to 65 535 bytes.
+const NVM_DATA_MAX: usize = u16::MAX as usize;
+
 /// `WH_ERROR_NOTFOUND` from `wolfhsm/wh_error.h` line 60.
 ///
 /// Returned when an NVM object or key with the given ID does not exist on the
@@ -89,14 +101,16 @@ struct WolfHsmState {
 impl WolfHsmState {
     /// Returns a mutable reference to the connected [`Client`].
     ///
-    /// # Panics
-    ///
-    /// Panics if `client` is `None`. Always call [`ensure_connected`] before
-    /// this method.
-    fn connected_client(&mut self) -> &mut Client {
-        self.client
-            .as_mut()
-            .expect("wolfhsm: connected_client called before ensure_connected")
+    /// Returns [`SecretError::Backend`] if `client` is `None`, which means
+    /// [`ensure_connected`] was not called or a transport error cleared the
+    /// cached client between `ensure_connected` and this call.
+    fn connected_client(&mut self) -> Result<&mut Client, SecretError> {
+        self.client.as_mut().ok_or_else(|| SecretError::Backend {
+            backend: BACKEND,
+            source: "wolfhsm: no connected client (ensure_connected was not called \
+                     or a transport error cleared the connection)"
+                .into(),
+        })
     }
 }
 
@@ -105,10 +119,13 @@ impl WolfHsmState {
 /// Backend that reads and writes wolfHSM NVM data objects by label.
 ///
 /// Construct with [`WolfHsmBackend::from_uri`].
+///
+/// The [`Debug`] impl redacts connection state to avoid leaking internal
+/// details in logs.
 pub struct WolfHsmBackend {
     label: String,
-    /// Configured server address (`?server=` value, may be empty).
-    server: String,
+    /// Configured server address (`?server=` value).
+    server: Option<String>,
     /// wolfHSM client ID (0–255). Defaults to 1.
     client_id: u8,
     /// SHM max request packet size (bytes). Only used for `shm:` transport.
@@ -118,12 +135,26 @@ pub struct WolfHsmBackend {
     state: Arc<Mutex<WolfHsmState>>,
 }
 
+impl std::fmt::Debug for WolfHsmBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WolfHsmBackend")
+            .field("label", &self.label)
+            .field("server", &self.server)
+            .field("client_id", &self.client_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WolfHsmBackend {
-    /// Construct from a `secretx:wolfhsm:<label>[?server=<addr>][?client_id=<n>]` URI.
+    /// Construct from a `secretx:wolfhsm:<label>[?server=<addr>&client_id=<n>]` URI.
     ///
     /// Validates URI syntax only; no network call is made.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `wolfhsm`, got `{}`",
@@ -149,14 +180,14 @@ impl WolfHsmBackend {
                     .into(),
             ));
         }
-        let server = parsed.param("server").unwrap_or("").to_owned();
+        let server = parsed.param("server").map(|s| s.to_owned());
         let req_size = parse_optional_u16(&parsed, "req_size", 4096)?;
         let resp_size = parse_optional_u16(&parsed, "resp_size", 4096)?;
         // Validate the ?server= address at construction time (pure parsing, no
         // I/O). WOLFHSM_SERVER from the environment is validated lazily at
         // first use because it is not known until then.
-        if !server.is_empty() {
-            make_transport(&server, req_size, resp_size)?;
+        if let Some(ref addr) = server {
+            make_transport(addr, req_size, resp_size)?;
         }
         let client_id: u8 = match parsed.param("client_id") {
             None => 1,
@@ -216,6 +247,12 @@ fn classify_err(e: wolfhsm::Error) -> SecretError {
     }
 }
 
+impl From<wolfhsm::Error> for SecretError {
+    fn from(e: wolfhsm::Error) -> Self {
+        classify_err(e)
+    }
+}
+
 fn join_err(e: tokio::task::JoinError) -> SecretError {
     SecretError::Backend {
         backend: BACKEND,
@@ -230,11 +267,54 @@ fn poison_err() -> SecretError {
     }
 }
 
+/// Returns `true` if `err` indicates a transport-level failure that
+/// invalidates the cached [`Client`] connection.
+///
+/// When this returns `true`, callers should set `state.client = None` (and
+/// clear `state.cached_nvm_id`) so the next operation attempts a fresh
+/// connection instead of reusing a broken handle.
+///
+/// Heuristic: any [`SecretError::Unavailable`] produced *after*
+/// [`ensure_connected`] succeeded implies the transport broke mid-operation.
+/// [`SecretError::Backend`] errors (permanent WH_ERROR codes, NVM-full, etc.)
+/// do not indicate a broken connection.
+fn is_transport_error(err: &SecretError) -> bool {
+    matches!(err, SecretError::Unavailable { backend, .. } if backend == "wolfhsm")
+}
+
+/// Execute `op` against the locked state; on transport error, clear the
+/// cached client so the next call reconnects.
+///
+/// This is the single chokepoint for the "reset on transport failure" policy.
+/// `op` receives `&mut WolfHsmState` with `client` already connected.
+fn with_connected_state<F, T>(
+    state: &Arc<Mutex<WolfHsmState>>,
+    server: Option<&str>,
+    client_id: u8,
+    req_size: u16,
+    resp_size: u16,
+    op: F,
+) -> Result<T, SecretError>
+where
+    F: FnOnce(&mut WolfHsmState) -> Result<T, SecretError>,
+{
+    let mut guard = state.lock().map_err(|_| poison_err())?;
+    ensure_connected(&mut guard, server, client_id, req_size, resp_size)?;
+    let result = op(&mut guard);
+    if let Err(ref e) = result {
+        if is_transport_error(e) {
+            guard.client = None;
+            guard.cached_nvm_id = None;
+        }
+    }
+    result
+}
+
 // ── Connection helpers ────────────────────────────────────────────────────────
 
-fn resolve_server(configured: &str) -> Result<String, SecretError> {
-    if !configured.is_empty() {
-        return Ok(configured.to_owned());
+fn resolve_server(configured: Option<&str>) -> Result<String, SecretError> {
+    if let Some(addr) = configured {
+        return Ok(addr.to_owned());
     }
     std::env::var("WOLFHSM_SERVER").map_err(|_| SecretError::Unavailable {
         backend: BACKEND,
@@ -327,17 +407,11 @@ fn parse_tcp_port(addr: &str, port_str: &str) -> Result<u16, SecretError> {
 }
 
 /// Parse an optional `u16` URI parameter, returning `default` if absent.
-fn parse_optional_u16(
-    parsed: &SecretUri,
-    name: &str,
-    default: u16,
-) -> Result<u16, SecretError> {
+fn parse_optional_u16(parsed: &SecretUri, name: &str, default: u16) -> Result<u16, SecretError> {
     match parsed.param(name) {
         None => Ok(default),
         Some(s) => s.parse().map_err(|_| {
-            SecretError::InvalidUri(format!(
-                "wolfhsm `?{name}={s}` is not a valid u16"
-            ))
+            SecretError::InvalidUri(format!("wolfhsm `?{name}={s}` is not a valid u16"))
         }),
     }
 }
@@ -348,7 +422,7 @@ fn parse_optional_u16(
 /// `state.client` to `None` signals that a reconnect should be attempted.
 fn ensure_connected(
     state: &mut WolfHsmState,
-    server: &str,
+    server: Option<&str>,
     client_id: u8,
     req_size: u16,
     resp_size: u16,
@@ -376,15 +450,11 @@ fn ensure_connected(
 ///
 /// `WH_ERROR_NOTFOUND` from `nvm_metadata` is treated as a stale list entry
 /// and skipped rather than propagated.
-///
-/// # Panics
-///
-/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
 fn find_by_label(
     client: &mut Client,
     label: &str,
 ) -> Result<(Option<NvmId>, Vec<NvmId>), SecretError> {
-    let ids = client.nvm_list().map_err(classify_err)?;
+    let ids = client.nvm_list()?;
     let mut found = None;
     for &id in &ids {
         match client.nvm_metadata(id) {
@@ -417,15 +487,13 @@ fn find_by_label(
 /// has no atomic find-or-allocate API, so the gap is inherent to the protocol.
 fn find_free_id_from_list(ids: Vec<NvmId>) -> Result<NvmId, SecretError> {
     let used: HashSet<u16> = ids.into_iter().map(u16::from).collect();
-    for n in 1u16..=u16::MAX {
-        if !used.contains(&n) {
-            return Ok(NvmId::new(n));
-        }
-    }
-    Err(SecretError::Backend {
-        backend: BACKEND,
-        source: "wolfHSM NVM is full; no free NVM ID available".into(),
-    })
+    (1u16..=u16::MAX)
+        .find(|n| !used.contains(n))
+        .map(NvmId::new)
+        .ok_or_else(|| SecretError::Backend {
+            backend: BACKEND,
+            source: "wolfHSM NVM is full; no free NVM ID available".into(),
+        })
 }
 
 /// Result of [`find_cached_or_scan`].
@@ -446,15 +514,16 @@ enum FindResult {
 /// scan), or [`FindResult::NotFound`] with the full ID list if absent.
 /// Updates `state.cached_nvm_id` on hit; clears it on cache miss.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
+/// Returns [`SecretError::Backend`] if `state.client` is `None` (i.e.
+/// [`ensure_connected`] was not called beforehand).
 fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<FindResult, SecretError> {
     // Validate cache before trusting it: another client may have deleted and
     // recreated the object under a different NVM ID.
     if let Some(cached) = state.cached_nvm_id {
         let still_valid = {
-            match state.connected_client().nvm_metadata(cached) {
+            match state.connected_client()?.nvm_metadata(cached) {
                 Ok(meta) => meta.label_str() == Some(label),
                 Err(wolfhsm::Error::Wh { code }) if code == WH_ERROR_NOTFOUND => false,
                 Err(e) => return Err(classify_err(e)),
@@ -466,7 +535,7 @@ fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<FindResu
         state.cached_nvm_id = None;
     }
 
-    let (id_opt, ids) = find_by_label(state.connected_client(), label)?;
+    let (id_opt, ids) = find_by_label(state.connected_client()?, label)?;
     match id_opt {
         Some(id) => {
             state.cached_nvm_id = Some(id);
@@ -478,12 +547,19 @@ fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<FindResu
 
 /// Return the NVM ID for `label`, returning [`SecretError::NotFound`] if absent.
 ///
-/// Thin wrapper over [`find_cached_or_scan`].
+/// When the cache is warm, returns the cached NVM ID without an `nvm_metadata`
+/// round-trip.  The caller (`get()`) performs `nvm_read` immediately; if the
+/// object was deleted or recreated under a different ID, `nvm_read` will fail
+/// and the caller clears the cache.  This avoids a redundant metadata check on
+/// every read when the common case is a stable, long-lived object.
 ///
-/// # Panics
-///
-/// Panics if `state.client` is `None`. Call [`ensure_connected`] first.
+/// When the cache is cold (after `refresh()`, connection reset, or first use),
+/// falls through to [`find_cached_or_scan`] which does a full NVM scan.
 fn get_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<NvmId, SecretError> {
+    // Fast path: trust the cache without a metadata round-trip.
+    if let Some(cached) = state.cached_nvm_id {
+        return Ok(cached);
+    }
     match find_cached_or_scan(state, label)? {
         FindResult::Found(id) => Ok(id),
         FindResult::NotFound(_) => Err(SecretError::NotFound),
@@ -503,14 +579,18 @@ impl SecretStore for WolfHsmBackend {
         let resp_size = self.resp_size;
 
         tokio::task::spawn_blocking(move || {
-            let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
-            let id = get_cached_or_scan(&mut guard, &label)?;
-            let bytes = guard
-                .connected_client()
-                .nvm_read(id, 0)
-                .map_err(classify_err)?;
-            Ok(SecretValue::new(bytes))
+            with_connected_state(
+                &state_arc,
+                server.as_deref(),
+                client_id,
+                req_size,
+                resp_size,
+                |state| {
+                    let id = get_cached_or_scan(state, &label)?;
+                    let bytes = state.connected_client()?.nvm_read(id, 0)?;
+                    Ok(SecretValue::new(bytes))
+                },
+            )
         })
         .await
         .map_err(join_err)?
@@ -525,15 +605,24 @@ impl SecretStore for WolfHsmBackend {
         let resp_size = self.resp_size;
 
         tokio::task::spawn_blocking(move || {
-            let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            guard.cached_nvm_id = None;
-            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
-            let id = get_cached_or_scan(&mut guard, &label)?;
-            let bytes = guard
-                .connected_client()
-                .nvm_read(id, 0)
-                .map_err(classify_err)?;
-            Ok(SecretValue::new(bytes))
+            // Clear the NVM ID cache before connecting so the scan is forced
+            // even if the connection was already established.
+            {
+                let mut guard = state_arc.lock().map_err(|_| poison_err())?;
+                guard.cached_nvm_id = None;
+            }
+            with_connected_state(
+                &state_arc,
+                server.as_deref(),
+                client_id,
+                req_size,
+                resp_size,
+                |state| {
+                    let id = get_cached_or_scan(state, &label)?;
+                    let bytes = state.connected_client()?.nvm_read(id, 0)?;
+                    Ok(SecretValue::new(bytes))
+                },
+            )
         })
         .await
         .map_err(join_err)?
@@ -552,50 +641,75 @@ impl WritableSecretStore for WolfHsmBackend {
         let req_size = self.req_size;
         let resp_size = self.resp_size;
         let bytes = value.into_bytes();
+        if bytes.len() > NVM_DATA_MAX {
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: format!(
+                    "secret value exceeds wolfHSM {NVM_DATA_MAX}-byte limit (got {} bytes)",
+                    bytes.len()
+                )
+                .into(),
+            });
+        }
 
         tokio::task::spawn_blocking(move || {
-            let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
-
-            match find_cached_or_scan(&mut guard, &label)? {
-                FindResult::Found(id) => {
-                    // Overwrite: wolfhsm deletes then re-adds at the same ID.
-                    guard
-                        .connected_client()
-                        .nvm_overwrite(id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
-                        .map_err(|e| match e {
-                            wolfhsm::Error::DataLost { id } => SecretError::DataLost {
-                                backend: BACKEND,
-                                message: format!(
-                                    "NVM object {id} (label `{label}`) was deleted but \
-                                     the replacement write failed; original data is gone"
-                                ),
-                            },
-                            other => classify_err(other),
-                        })?;
-                    // find_cached_or_scan already set cached_nvm_id = Some(id);
-                    // this write is defensive — makes the cache invariant visible
-                    // at the call site and guards against future refactors that
-                    // move or bypass find_cached_or_scan.
-                    guard.cached_nvm_id = Some(id);
-                }
-                FindResult::NotFound(ids) => {
-                    // New object: pick a free NVM ID from the list that
-                    // find_cached_or_scan already fetched, avoiding a second
-                    // nvm_list round-trip to the server.
-                    // TOCTOU: another client with the same client_id may
-                    // allocate this ID between find_free_id_from_list and
-                    // nvm_add — wolfHSM has no atomic allocate API.  If
-                    // nvm_add fails, propagate Backend; do not retry blindly.
-                    let free_id = find_free_id_from_list(ids)?;
-                    guard
-                        .connected_client()
-                        .nvm_add(free_id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
-                        .map_err(classify_err)?;
-                    guard.cached_nvm_id = Some(free_id);
-                }
-            }
-            Ok(())
+            with_connected_state(
+                &state_arc,
+                server.as_deref(),
+                client_id,
+                req_size,
+                resp_size,
+                |state| {
+                    match find_cached_or_scan(state, &label)? {
+                        FindResult::Found(id) => {
+                            // Overwrite: wolfhsm deletes then re-adds at the same ID.
+                            state
+                                .connected_client()?
+                                .nvm_overwrite(
+                                    id,
+                                    wolfhsm::NvmAccess(0),
+                                    wolfhsm::NvmFlags(0),
+                                    &label,
+                                    bytes.as_ref(),
+                                )
+                                .map_err(|e| match e {
+                                    wolfhsm::Error::DataLost { id } => SecretError::DataLost {
+                                        backend: BACKEND,
+                                        message: format!(
+                                            "NVM object {id} (label `{label}`) was deleted but \
+                                             the replacement write failed; original data is gone"
+                                        ),
+                                    },
+                                    other => classify_err(other),
+                                })?;
+                            // find_cached_or_scan already set cached_nvm_id = Some(id);
+                            // this write is defensive — makes the cache invariant visible
+                            // at the call site and guards against future refactors that
+                            // move or bypass find_cached_or_scan.
+                            state.cached_nvm_id = Some(id);
+                        }
+                        FindResult::NotFound(ids) => {
+                            // New object: pick a free NVM ID from the list that
+                            // find_cached_or_scan already fetched, avoiding a second
+                            // nvm_list round-trip to the server.
+                            // TOCTOU: another client with the same client_id may
+                            // allocate this ID between find_free_id_from_list and
+                            // nvm_add — wolfHSM has no atomic allocate API.  If
+                            // nvm_add fails, propagate Backend; do not retry blindly.
+                            let free_id = find_free_id_from_list(ids)?;
+                            state.connected_client()?.nvm_add(
+                                free_id,
+                                wolfhsm::NvmAccess(0),
+                                wolfhsm::NvmFlags(0),
+                                &label,
+                                bytes.as_ref(),
+                            )?;
+                            state.cached_nvm_id = Some(free_id);
+                        }
+                    }
+                    Ok(())
+                },
+            )
         })
         .await
         .map_err(join_err)?
@@ -635,18 +749,17 @@ fn signing_unavailable(label: &str) -> SecretError {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     BACKEND,
-    |uri: &str| {
-        WolfHsmBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = WolfHsmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     BACKEND,
-    |uri: &str| {
-        WolfHsmBackend::from_uri(uri).map(|b| {
-            std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
-        })
+    |uri: &secretx_core::SecretUri| {
+        let b = WolfHsmBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::WritableSecretStore>)
     },
 ));
 
@@ -666,7 +779,7 @@ mod tests {
     fn from_uri_ok() {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key").unwrap();
         assert_eq!(b.label, "my-key");
-        assert_eq!(b.server, "");
+        assert_eq!(b.server, None);
         assert_eq!(b.client_id, 1);
     }
 
@@ -674,7 +787,7 @@ mod tests {
     fn from_uri_with_server_param() {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=127.0.0.1:8080").unwrap();
         assert_eq!(b.label, "my-key");
-        assert_eq!(b.server, "127.0.0.1:8080");
+        assert_eq!(b.server, Some("127.0.0.1:8080".to_owned()));
     }
 
     #[test]
@@ -879,7 +992,7 @@ mod tests {
             return;
         }
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=shm:/wolfhsm").unwrap();
-        assert_eq!(b.server, "shm:/wolfhsm");
+        assert_eq!(b.server, Some("shm:/wolfhsm".to_owned()));
         assert_eq!(b.req_size, 4096);
         assert_eq!(b.resp_size, 4096);
     }
@@ -909,10 +1022,7 @@ mod tests {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
         assert!(matches!(
             b.get().await,
-            Err(SecretError::Unavailable {
-                backend: "wolfhsm",
-                ..
-            })
+            Err(SecretError::Unavailable { ref backend, .. }) if backend == "wolfhsm"
         ));
     }
 
@@ -921,10 +1031,7 @@ mod tests {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
         assert!(matches!(
             b.sign(b"data").await,
-            Err(SecretError::Unavailable {
-                backend: "wolfhsm",
-                ..
-            })
+            Err(SecretError::Unavailable { ref backend, .. }) if backend == "wolfhsm"
         ));
     }
 
@@ -933,10 +1040,7 @@ mod tests {
         let b = WolfHsmBackend::from_uri("secretx:wolfhsm:test-key").unwrap();
         assert!(matches!(
             b.algorithm(),
-            Err(SecretError::Unavailable {
-                backend: "wolfhsm",
-                ..
-            })
+            Err(SecretError::Unavailable { ref backend, .. }) if backend == "wolfhsm"
         ));
     }
 }

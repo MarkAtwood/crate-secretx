@@ -26,6 +26,8 @@
 //! # }
 //! ```
 
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 
 /// Backend that reads a secret from a single environment variable.
@@ -50,20 +52,40 @@ impl EnvBackend {
     ///
     /// Does not read the variable — construction only.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != "env" {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `env`, got `{}`",
                 parsed.backend()
             )));
         }
-        if parsed.path().is_empty() {
+        let var_name = parsed.path();
+        if var_name.is_empty() {
             return Err(SecretError::InvalidUri(
                 "env URI requires a variable name: secretx:env:VAR_NAME".into(),
             ));
         }
+        // Reject names that can never resolve as environment variables.
+        // POSIX (IEEE Std 1003.1) says env var names must not contain '='
+        // and must not be empty.  Embedded NUL bytes would be truncated by
+        // the C runtime.  Catch these at construction time rather than
+        // letting them silently fail at lookup time.
+        if var_name.contains('=') {
+            return Err(SecretError::InvalidUri(
+                "env var name must not contain '='".into(),
+            ));
+        }
+        if var_name.contains('\0') {
+            return Err(SecretError::InvalidUri(
+                "env var name must not contain NUL bytes".into(),
+            ));
+        }
         Ok(Self {
-            var: parsed.path().to_owned(),
+            var: var_name.to_owned(),
         })
     }
 }
@@ -88,9 +110,9 @@ impl SecretStore for EnvBackend {
 
 inventory::submit!(secretx_core::BackendRegistration::new(
     "env",
-    |uri: &str| {
-        EnvBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
+    |uri: &secretx_core::SecretUri| {
+        let b = EnvBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SecretStore>)
     },
 ));
 
@@ -116,6 +138,22 @@ mod tests {
     fn from_uri_empty_path() {
         assert!(matches!(
             EnvBackend::from_uri("secretx:env"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_rejects_equals_in_name() {
+        assert!(matches!(
+            EnvBackend::from_uri("secretx:env:FOO=BAR"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_rejects_nul_in_name() {
+        assert!(matches!(
+            EnvBackend::from_uri("secretx:env:FOO\0BAR"),
             Err(SecretError::InvalidUri(_))
         ));
     }

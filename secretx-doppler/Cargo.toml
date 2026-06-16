@@ -16,6 +16,7 @@ secretx-core = { workspace = true }
 async-trait = { workspace = true }
 inventory = { workspace = true }
 reqwest = { workspace = true, features = ["query"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = { workspace = true }
 

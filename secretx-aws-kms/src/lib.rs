@@ -67,7 +67,11 @@ impl AwsKmsBackend {
     /// at construction and fail at the first `sign()` call with an opaque KMS
     /// `InvalidKeyUsageException`.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
-        let parsed = SecretUri::parse(uri)?;
+        Self::from_parsed_uri(&SecretUri::parse(uri)?)
+    }
+
+    /// Construct from a pre-parsed [`SecretUri`].
+    pub fn from_parsed_uri(parsed: &SecretUri) -> Result<Self, SecretError> {
         if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `aws-kms`, got `{}`",
@@ -208,10 +212,7 @@ fn ecdsa_der_to_raw_p256(der: &[u8]) -> Result<Vec<u8>, SecretError> {
     let r32 = fixed32(r).map_err(parse_err)?;
     let s32 = fixed32(s).map_err(parse_err)?;
 
-    let mut out = vec![0u8; 64];
-    out[..32].copy_from_slice(&r32);
-    out[32..].copy_from_slice(&s32);
-    Ok(out)
+    Ok([r32, s32].concat())
 }
 
 /// Parse a DER length field. Returns `Some((length, remaining_bytes))`.
@@ -296,21 +297,19 @@ impl SigningBackend for AwsKmsBackend {
         // imposes a 4096-byte message size limit; MessageType::Digest carries
         // no size limit and is semantically identical (both algorithms sign
         // the SHA-256 hash of the message).
-        let digest = Sha256::digest(message);
+        let digest: [u8; 32] = Sha256::digest(message).into();
 
         let response = self
             .client
             .sign()
             .key_id(&self.key_id)
-            .message(Blob::new(digest.to_vec()))
+            .message(Blob::new(digest))
             .message_type(MessageType::Digest)
             .signing_algorithm(algo_spec)
             .send()
             .await
             .map_err(|sdk_err| {
-                classify_kms_sdk_error(sdk_err, |svc| {
-                    matches!(svc, SignError::NotFoundException(_))
-                })
+                classify_kms_sdk_error(sdk_err, SignError::is_not_found_exception)
             })?;
 
         let sig_bytes = response
@@ -339,9 +338,7 @@ impl SigningBackend for AwsKmsBackend {
             .send()
             .await
             .map_err(|sdk_err| {
-                classify_kms_sdk_error(sdk_err, |svc| {
-                    matches!(svc, GetPublicKeyError::NotFoundException(_))
-                })
+                classify_kms_sdk_error(sdk_err, GetPublicKeyError::is_not_found_exception)
             })?;
 
         Ok(response
@@ -364,9 +361,9 @@ impl SigningBackend for AwsKmsBackend {
 
 inventory::submit!(secretx_core::SigningBackendRegistration::new(
     "aws-kms",
-    |uri: &str| {
-        AwsKmsBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
+    |uri: &secretx_core::SecretUri| {
+        let b = AwsKmsBackend::from_parsed_uri(uri)?;
+        Ok(Arc::new(b) as Arc<dyn secretx_core::SigningBackend>)
     },
 ));
 

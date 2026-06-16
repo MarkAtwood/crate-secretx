@@ -1084,34 +1084,35 @@ pub enum SecretError {
 fn percent_decode(s: &str) -> Result<String, SecretError> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 2 >= bytes.len() {
-                return Err(SecretError::InvalidUri(format!(
-                    "incomplete percent-encoding at position {i} in `{s}`"
-                )));
-            }
-            let hi = hex_digit(bytes[i + 1]).ok_or_else(|| {
-                SecretError::InvalidUri(format!(
-                    "invalid percent-encoding `%{}{}` at position {i} in `{s}`",
-                    bytes[i + 1] as char,
-                    bytes[i + 2] as char
-                ))
-            })?;
-            let lo = hex_digit(bytes[i + 2]).ok_or_else(|| {
-                SecretError::InvalidUri(format!(
-                    "invalid percent-encoding `%{}{}` at position {i} in `{s}`",
-                    bytes[i + 1] as char,
-                    bytes[i + 2] as char
-                ))
-            })?;
-            out.push((hi << 4) | lo);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
+    let mut iter = bytes.iter().copied().enumerate();
+    while let Some((pos, b)) = iter.next() {
+        if b != b'%' {
+            out.push(b);
+            continue;
         }
+        let (_, h) = iter.next().ok_or_else(|| {
+            SecretError::InvalidUri(format!(
+                "incomplete percent-encoding at position {pos} in `{s}`"
+            ))
+        })?;
+        let (_, l) = iter.next().ok_or_else(|| {
+            SecretError::InvalidUri(format!(
+                "incomplete percent-encoding at position {pos} in `{s}`"
+            ))
+        })?;
+        let hi = hex_digit(h).ok_or_else(|| {
+            SecretError::InvalidUri(format!(
+                "invalid percent-encoding `%{}{}` at position {pos} in `{s}`",
+                h as char, l as char
+            ))
+        })?;
+        let lo = hex_digit(l).ok_or_else(|| {
+            SecretError::InvalidUri(format!(
+                "invalid percent-encoding `%{}{}` at position {pos} in `{s}`",
+                h as char, l as char
+            ))
+        })?;
+        out.push((hi << 4) | lo);
     }
     String::from_utf8(out).map_err(|_| {
         SecretError::InvalidUri(format!(
@@ -1497,42 +1498,43 @@ pub fn get_blocking<S: SecretStore + ?Sized>(store: &S) -> Result<SecretValue, S
     // Instead, use std::thread::scope to spawn a scoped thread that borrows
     // `store` and `name` safely. The scope guarantees the thread is joined
     // before it exits, so no lifetime transmutation is needed.
-    match tokio::runtime::Handle::try_current() {
-        Err(_) => tokio::runtime::Builder::new_current_thread()
+    if tokio::runtime::Handle::try_current().is_err() {
+        return tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| SecretError::Backend {
                 backend: "blocking",
                 source: e.into(),
             })?
-            .block_on(store.get()),
-        Ok(_) => {
-            let mut result: Option<Result<SecretValue, SecretError>> = None;
-            std::thread::scope(|s| {
-                let join = s.spawn(|| {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|e| SecretError::Backend {
-                            backend: "blocking",
-                            source: e.into(),
-                        })?
-                        .block_on(store.get())
-                });
-                result = Some(join.join().unwrap_or_else(|panic| {
-                    Err(SecretError::Backend {
-                        backend: "blocking",
-                        source: format!(
-                            "get_blocking thread panicked: {}",
-                            panic_message(&panic)
-                        )
-                        .into(),
-                    })
-                }));
-            });
-            result.expect("scope always sets result before exiting")
-        }
+            .block_on(store.get());
     }
+
+    // Inside an existing runtime — block_on would panic on the same thread.
+    // Spawn a scoped thread that borrows `store` safely.
+    let mut result: Option<Result<SecretValue, SecretError>> = None;
+    std::thread::scope(|s| {
+        let join = s.spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| SecretError::Backend {
+                    backend: "blocking",
+                    source: e.into(),
+                })?
+                .block_on(store.get())
+        });
+        result = Some(join.join().unwrap_or_else(|panic| {
+            Err(SecretError::Backend {
+                backend: "blocking",
+                source: format!(
+                    "get_blocking thread panicked: {}",
+                    panic_message(&panic)
+                )
+                .into(),
+            })
+        }));
+    });
+    result.expect("scope always sets result before exiting")
 }
 
 // ── Backend registration ──────────────────────────────────────────────────────
@@ -1542,15 +1544,15 @@ pub fn get_blocking<S: SecretStore + ?Sized>(store: &S) -> Result<SecretValue, S
 pub struct BackendRegistration {
     /// Backend scheme name (e.g. `"env"`, `"file"`, `"aws-sm"`).
     pub name: &'static str,
-    /// Factory function: construct a backend from a URI string.
-    pub factory: fn(&str) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
+    /// Factory function: construct a backend from a pre-parsed [`SecretUri`].
+    pub factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
 }
 
 impl BackendRegistration {
     /// Create a new registration entry.
     pub const fn new(
         name: &'static str,
-        factory: fn(&str) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
+        factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
     ) -> Self {
         Self { name, factory }
     }
@@ -1562,15 +1564,15 @@ inventory::collect!(BackendRegistration);
 pub struct WritableBackendRegistration {
     /// Backend scheme name.
     pub name: &'static str,
-    /// Factory function: construct a writable backend from a URI string.
-    pub factory: fn(&str) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
+    /// Factory function: construct a writable backend from a pre-parsed [`SecretUri`].
+    pub factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
 }
 
 impl WritableBackendRegistration {
     /// Create a new registration entry.
     pub const fn new(
         name: &'static str,
-        factory: fn(&str) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
+        factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
     ) -> Self {
         Self { name, factory }
     }
@@ -1582,15 +1584,15 @@ inventory::collect!(WritableBackendRegistration);
 pub struct SigningBackendRegistration {
     /// Backend scheme name.
     pub name: &'static str,
-    /// Factory function: construct a signing backend from a URI string.
-    pub factory: fn(&str) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
+    /// Factory function: construct a signing backend from a pre-parsed [`SecretUri`].
+    pub factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
 }
 
 impl SigningBackendRegistration {
     /// Create a new registration entry.
     pub const fn new(
         name: &'static str,
-        factory: fn(&str) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
+        factory: fn(&SecretUri) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
     ) -> Self {
         Self { name, factory }
     }

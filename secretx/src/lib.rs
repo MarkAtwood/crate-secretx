@@ -97,7 +97,7 @@ pub fn from_uri(uri: &str) -> Result<Arc<dyn SecretStore>, SecretError> {
     let backend = parsed.backend();
     for reg in inventory::iter::<secretx_core::BackendRegistration>() {
         if reg.name == backend {
-            return (reg.factory)(uri);
+            return (reg.factory)(&parsed);
         }
     }
     for reg in inventory::iter::<secretx_core::SigningBackendRegistration>() {
@@ -135,7 +135,7 @@ pub fn from_uri_writable(uri: &str) -> Result<Arc<dyn WritableSecretStore>, Secr
     let backend = parsed.backend();
     for reg in inventory::iter::<secretx_core::WritableBackendRegistration>() {
         if reg.name == backend {
-            return (reg.factory)(uri);
+            return (reg.factory)(&parsed);
         }
     }
     for reg in inventory::iter::<secretx_core::BackendRegistration>() {
@@ -170,7 +170,7 @@ pub fn from_signing_uri(uri: &str) -> Result<Arc<dyn SigningBackend>, SecretErro
     let backend = parsed.backend();
     for reg in inventory::iter::<secretx_core::SigningBackendRegistration>() {
         if reg.name == backend {
-            return (reg.factory)(uri);
+            return (reg.factory)(&parsed);
         }
     }
     // Give a helpful error for backends that exist but don't support signing.
