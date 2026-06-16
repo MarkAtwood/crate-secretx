@@ -9,6 +9,7 @@ description = "Adapter bridging secretx::SigningBackend to signature::Signer"
 keywords = ["secrets", "signature", "signer", "adapter"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
+readme = "README.md"
 
 [dependencies]
 secretx-core = { workspace = true }
