@@ -102,6 +102,7 @@ fn sign_sync(backend: &Arc<dyn SigningBackend>, msg: &[u8]) -> Result<Vec<u8>, S
 ///
 /// Validates at construction that the backend's algorithm is Ed25519.
 #[cfg(feature = "ed25519")]
+#[derive(Clone)]
 pub struct Ed25519Signer {
     backend: Arc<dyn SigningBackend>,
 }
@@ -164,6 +165,7 @@ impl signature::Signer<ed25519::Signature> for Ed25519Signer {
 /// (two 32-byte big-endian scalars), not DER-encoded. This is the format
 /// specified by [`SigningBackend::sign`].
 #[cfg(feature = "ecdsa-p256")]
+#[derive(Clone)]
 pub struct EcdsaP256Signer {
     backend: Arc<dyn SigningBackend>,
 }
@@ -227,6 +229,7 @@ const RSA_2048_SIG_LEN: usize = 256;
 /// Validates at construction that the backend's algorithm is RSA-PSS 2048.
 /// The expected signature length is 256 bytes (2048 bits).
 #[cfg(feature = "rsa-pss")]
+#[derive(Clone)]
 pub struct RsaPss2048Signer {
     backend: Arc<dyn SigningBackend>,
 }
