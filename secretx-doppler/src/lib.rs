@@ -136,7 +136,7 @@ impl DopplerBackend {
 /// 5xx codes and HTTP 429 Too Many Requests are transient (→ `Unavailable`);
 /// all other non-2xx codes are permanent configuration/request errors (→ `Backend`).
 fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
-    let msg = if detail.is_empty() {
+    let base = if detail.is_empty() {
         format!("HTTP {status}")
     } else {
         format!("HTTP {status}: {detail}")
@@ -144,12 +144,20 @@ fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
     if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         SecretError::Unavailable {
             backend: BACKEND,
-            source: msg.into(),
+            source: base.into(),
+        }
+    } else if status == 401 || status == 403 {
+        SecretError::Backend {
+            backend: BACKEND,
+            source: format!(
+                "{base} (check DOPPLER_TOKEN and project permissions)"
+            )
+            .into(),
         }
     } else {
         SecretError::Backend {
             backend: BACKEND,
-            source: msg.into(),
+            source: base.into(),
         }
     }
 }
@@ -180,24 +188,6 @@ impl SecretStore for DopplerBackend {
         let status = resp.status();
         if status == 404 {
             return Err(SecretError::NotFound);
-        }
-        if status == 401 || status == 403 {
-            // Authentication/authorization failure — permanent until token or
-            // permissions are fixed. Use Backend (not Unavailable) so callers
-            // know that retrying will not help.
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: format!(
-                    "HTTP {status} (check DOPPLER_TOKEN and project permissions){}",
-                    if detail.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {detail}")
-                    }
-                )
-                .into(),
-            });
         }
         if !status.is_success() {
             let detail = resp.text().await.unwrap_or_default();
