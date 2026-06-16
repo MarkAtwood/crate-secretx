@@ -1,0 +1,21 @@
+[package]
+name = "secretx-mem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "In-process memory backend for secretx."
+readme = "README.md"
+keywords = ["secrets", "security"]
+categories = ["cryptography", "authentication"]
+repository = "https://github.com/MarkAtwood/crate-secretx"
+
+[dependencies]
+async-trait = { workspace = true }
+inventory = { workspace = true }
+secretx-core = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

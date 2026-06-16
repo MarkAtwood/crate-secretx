@@ -28,13 +28,14 @@ secretx-hashicorp-vault = { workspace = true, optional = true }
 secretx-k8s = { workspace = true, optional = true }
 secretx-keyring = { workspace = true, optional = true }
 secretx-local-signing = { workspace = true, optional = true }
+secretx-mem = { workspace = true, optional = true }
 secretx-pkcs11 = { workspace = true, optional = true }
 secretx-wolfhsm = { workspace = true, optional = true }
 secretx-systemd = { workspace = true, optional = true }
 secretx-desktop = { workspace = true, optional = true }
 
 [features]
-default = ["env", "file"]
+default = ["env", "file", "mem"]
 aws-kms = ["dep:secretx-aws-kms"]
 aws-sm = ["dep:secretx-aws-sm"]
 aws-ssm = ["dep:secretx-aws-ssm"]
@@ -49,6 +50,7 @@ hashicorp-vault = ["dep:secretx-hashicorp-vault"]
 k8s = ["dep:secretx-k8s"]
 keyring = ["dep:secretx-keyring"]
 local-signing = ["dep:secretx-local-signing"]
+mem = ["dep:secretx-mem"]
 pkcs11 = ["dep:secretx-pkcs11"]
 wolfhsm = ["dep:secretx-wolfhsm"]
 systemd = ["dep:secretx-systemd"]

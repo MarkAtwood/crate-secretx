@@ -60,6 +60,7 @@ secretx:<backend>:<path>[?options]
 | `secretx:env:MY_SECRET` | Environment variable | |
 | `secretx:file:/etc/secrets/key` | File (absolute path) | |
 | `secretx:file:relative/path` | File (relative to CWD) | |
+| `secretx:mem:my-key` | In-process memory | testing, ephemeral, bootstrap |
 | `secretx:aws-kms:alias/my-key` | AWS KMS | signing only |
 | `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager | |
 | `secretx:aws-sm:prod/my-secret?field=password` | AWS Secrets Manager | extract one JSON field |
@@ -96,7 +97,7 @@ secretx = { version = "0.5", features = ["aws-sm", "file"] }
 
 Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
 `cache`, `desktop`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`,
-`k8s`, `keyring`, `local-signing`, `pkcs11`, `systemd`, `wolfhsm`.
+`k8s`, `keyring`, `local-signing`, `mem` (default), `pkcs11`, `systemd`, `wolfhsm`.
 
 ```rust
 use secretx::{SecretStore, SecretValue};
@@ -174,7 +175,7 @@ Feature flags: `ed25519`, `ecdsa-p256`, `rsa-pss`.
 **`SecretStore`** — the main trait: `get` and `refresh`. All backends implement this.
 
 **`WritableSecretStore`** — subtrait that adds `put`. Implemented by backends that support
-writes (file, keyring, doppler, cloud stores). Read-only backends (`env`, `bitwarden`, `systemd`)
+writes (file, mem, keyring, doppler, cloud stores). Read-only backends (`env`, `bitwarden`, `systemd`)
 implement only `SecretStore`.
 
 **`SigningBackend`** — for HSM-resident keys: `sign`, `public_key_der`, `algorithm`. The
@@ -199,6 +200,7 @@ Backend crates have no compile-time feature guards.
 | `secretx-cache` | `CachingStore<S>` — TTL-based in-memory cache over any `SecretStore` |
 | `secretx-env` | Environment variable backend |
 | `secretx-file` | Filesystem backend |
+| `secretx-mem` | In-process memory backend |
 | `secretx-aws-kms` | AWS KMS backend (signing only) |
 | `secretx-aws-sm` | AWS Secrets Manager backend |
 | `secretx-aws-ssm` | AWS SSM Parameter Store backend |
@@ -282,6 +284,7 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `env` | ✅ real I/O | reads live env vars |
 | `file` | ✅ real I/O | reads/writes real files |
 | `local-signing` | ✅ real crypto | sign + verify round-trip |
+| `mem` | ✅ in-process | no external service |
 | `cache` | ✅ real TTL logic | in-memory, no external service |
 | `aws-sm` | ✅ real AWS | tested against AWS Secrets Manager |
 | `aws-ssm` | ✅ real AWS | tested against AWS SSM Parameter Store |

@@ -22,7 +22,7 @@
 //!
 //! ## Read and write a secret
 //!
-//! Use [`from_uri_writable`] for backends that support writes (`file`, `aws-sm`, `aws-ssm`,
+//! Use [`from_uri_writable`] for backends that support writes (`file`, `mem`, `aws-sm`, `aws-ssm`,
 //! `azure-kv`, `doppler`, `gcp-sm`, `hashicorp-vault`, `keyring`, `pkcs11`).
 //!
 //! ```rust,no_run
@@ -76,6 +76,8 @@ use secretx_k8s as _;
 use secretx_keyring as _;
 #[cfg(feature = "local-signing")]
 use secretx_local_signing as _;
+#[cfg(feature = "mem")]
+use secretx_mem as _;
 #[cfg(feature = "pkcs11")]
 use secretx_pkcs11 as _;
 #[cfg(feature = "systemd")]
@@ -221,6 +223,11 @@ mod tests {
         assert!(from_uri("secretx:file:relative/path/key").is_ok());
     }
 
+    #[test]
+    fn from_uri_mem_dispatches_correctly() {
+        assert!(from_uri("secretx:mem:my-key").is_ok());
+    }
+
     // Signing-only backends routed through from_uri must return InvalidUri.
     #[cfg(feature = "aws-kms")]
     #[test]
@@ -309,10 +316,15 @@ mod tests {
         ));
     }
 
-    // file is a default feature; always runs.
+    // file and mem are default features; always runs.
     #[test]
     fn from_uri_writable_file_dispatches_correctly() {
         assert!(from_uri_writable("secretx:file:relative/path/key").is_ok());
+    }
+
+    #[test]
+    fn from_uri_writable_mem_dispatches_correctly() {
+        assert!(from_uri_writable("secretx:mem:my-key").is_ok());
     }
 
     // env is read-only; from_uri_writable must reject it.
@@ -362,16 +374,24 @@ mod tests {
             names.contains(&"file"),
             "file BackendRegistration not found in inventory"
         );
+        assert!(
+            names.contains(&"mem"),
+            "mem BackendRegistration not found in inventory"
+        );
     }
 
     #[test]
-    fn inventory_writable_registrations_include_file() {
+    fn inventory_writable_registrations_include_file_and_mem() {
         let names: Vec<_> = inventory::iter::<secretx_core::WritableBackendRegistration>()
             .map(|r| r.name)
             .collect();
         assert!(
             names.contains(&"file"),
             "file WritableBackendRegistration not found in inventory"
+        );
+        assert!(
+            names.contains(&"mem"),
+            "mem WritableBackendRegistration not found in inventory"
         );
         // env must NOT be in writable — it's read-only
         assert!(
