@@ -143,6 +143,27 @@ let signature = backend.sign(&message).await?;
 let pubkey_der = backend.public_key_der().await?;
 ```
 
+### Bridging to RustCrypto `signature::Signer`
+
+The `secretx-signature` crate adapts any `SigningBackend` to RustCrypto's sync
+`signature::Signer<S>` trait. Algorithm is validated at construction; the async
+signing operation runs on a dedicated thread.
+
+```toml
+[dependencies]
+secretx-signature = { version = "0.5", features = ["ed25519"] }
+```
+
+```rust
+use secretx_signature::Ed25519Signer;
+use signature::Signer;
+
+let signer = Ed25519Signer::new(backend)?;
+let sig: ed25519::Signature = signer.try_sign(b"hello")?;
+```
+
+Feature flags: `ed25519`, `ecdsa-p256`, `rsa-pss`.
+
 ---
 
 ## Core types
@@ -193,6 +214,7 @@ Backend crates have no compile-time feature guards.
 | `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
+| `secretx-signature` | Adapter: bridges `SigningBackend` to RustCrypto `signature::Signer` |
 | `secretx` | Umbrella: re-exports `secretx-core` + `from_uri` dispatch |
 
 ---
