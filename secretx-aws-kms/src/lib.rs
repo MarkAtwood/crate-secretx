@@ -106,6 +106,21 @@ impl AwsKmsBackend {
 
 // ── ECDSA DER → raw conversion helpers ───────────────────────────────────────
 
+/// Returns true for KMS error codes that are transient (retry may succeed).
+///
+/// Covers throttling (rate limits), internal server errors, dependency
+/// timeouts, and temporarily unavailable keys.
+fn is_transient_kms_code(code: &str) -> bool {
+    matches!(
+        code,
+        "ThrottlingException"
+            | "RequestThrottledException"
+            | "KMSInternalException"
+            | "DependencyTimeoutException"
+            | "KeyUnavailableException"
+    )
+}
+
 /// Convert a DER-encoded ECDSA-P256 signature to raw 64-byte (r||s) format.
 ///
 /// AWS KMS Sign() returns DER for ECDSA algorithms.  The `SigningBackend::sign()`
@@ -240,10 +255,8 @@ impl SigningBackend for AwsKmsBackend {
                     if matches!(svc, SignError::NotFoundException(_)) {
                         return SecretError::NotFound;
                     }
-                    // ThrottlingException and RequestThrottledException are transient;
-                    // retry may succeed after backoff.
                     let code = svc.meta().code().unwrap_or("");
-                    if code == "ThrottlingException" || code == "RequestThrottledException" {
+                    if is_transient_kms_code(code) {
                         return SecretError::Unavailable {
                             backend: "aws-kms",
                             source: svc.to_string().into(),
@@ -292,10 +305,8 @@ impl SigningBackend for AwsKmsBackend {
                     if matches!(svc, GetPublicKeyError::NotFoundException(_)) {
                         return SecretError::NotFound;
                     }
-                    // ThrottlingException and RequestThrottledException are transient;
-                    // retry may succeed after backoff.
                     let code = svc.meta().code().unwrap_or("");
-                    if code == "ThrottlingException" || code == "RequestThrottledException" {
+                    if is_transient_kms_code(code) {
                         return SecretError::Unavailable {
                             backend: "aws-kms",
                             source: svc.to_string().into(),
