@@ -806,14 +806,12 @@ mod tests {
     #[tokio::test]
     async fn integration_get_data_object() {
         if std::env::var("SECRETX_PKCS11_TEST").as_deref() != Ok("1") {
+            eprintln!("skipped: set SECRETX_PKCS11_TEST=1 to run");
             return;
         }
-        let lib = match std::env::var("PKCS11_LIB") {
-            Ok(v) => v,
-            Err(_) => {
-                eprintln!("PKCS11_LIB not set; skipping integration test");
-                return;
-            }
+        let Ok(lib) = std::env::var("PKCS11_LIB") else {
+            eprintln!("skipped: PKCS11_LIB not set");
+            return;
         };
         let label =
             std::env::var("PKCS11_TEST_DATA_LABEL").unwrap_or_else(|_| "test-data".to_string());
@@ -829,11 +827,12 @@ mod tests {
     #[tokio::test]
     async fn integration_sign() {
         if std::env::var("SECRETX_PKCS11_TEST").as_deref() != Ok("1") {
+            eprintln!("skipped: set SECRETX_PKCS11_TEST=1 to run");
             return;
         }
-        let lib = match std::env::var("PKCS11_LIB") {
-            Ok(v) => v,
-            Err(_) => return,
+        let Ok(lib) = std::env::var("PKCS11_LIB") else {
+            eprintln!("skipped: PKCS11_LIB not set");
+            return;
         };
         let label =
             std::env::var("PKCS11_TEST_KEY_LABEL").unwrap_or_else(|_| "test-key".to_string());
