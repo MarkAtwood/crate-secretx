@@ -109,6 +109,8 @@ fn sign_sync(backend: &Arc<dyn SigningBackend>, msg: &[u8]) -> Result<Vec<u8>, S
 /// Adapter wrapping a [`SigningBackend`] as a `Signer<ed25519::Signature>`.
 ///
 /// Validates at construction that the backend's algorithm is Ed25519.
+/// The backend must return signatures as 64 raw bytes per RFC 8032 §5.1.6,
+/// not DER-encoded. This is the format specified by [`SigningBackend::sign`].
 #[cfg(feature = "ed25519")]
 #[derive(Clone)]
 pub struct Ed25519Signer {
