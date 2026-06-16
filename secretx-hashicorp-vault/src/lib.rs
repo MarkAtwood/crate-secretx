@@ -152,7 +152,7 @@ impl VaultBackend {
 
         let addr = parsed
             .param("addr")
-            .map(|s| s.to_string())
+            .map(str::to_owned)
             .or_else(|| std::env::var("VAULT_ADDR").ok())
             .unwrap_or_else(|| "http://127.0.0.1:8200".to_string());
         // Trim trailing slashes so URL construction is not sensitive to whether
@@ -167,7 +167,7 @@ impl VaultBackend {
                 })?,
             );
 
-        let field = parsed.param("field").map(|s| s.to_string());
+        let field = parsed.param("field").map(str::to_owned);
         let http_client = reqwest::Client::new();
 
         Ok(Self {
