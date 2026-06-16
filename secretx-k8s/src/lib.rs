@@ -77,22 +77,33 @@ impl K8sBackend {
     }
 }
 
+/// Classify a kube error as transient ([`SecretError::Unavailable`]) or
+/// permanent ([`SecretError::Backend`]).
+///
+/// Transient (retry may succeed): network errors, transport failures,
+/// token-refresh failures, API 429/5xx.
+/// Permanent (retry will not help): RBAC denials, bad requests, config errors.
 fn map_kube_error(e: kube::Error) -> SecretError {
-    match &e {
-        // 403 Forbidden is a permanent RBAC misconfiguration — not retriable.
-        kube::Error::Api(s) if s.is_forbidden() => SecretError::Backend {
+    let is_transient = match &e {
+        // API errors: 429 and 5xx are transient server-side conditions.
+        kube::Error::Api(s) => s.code == 429 || (500..600).contains(&s.code),
+        // Network / transport / tower middleware — server may still be healthy.
+        kube::Error::HyperError(_) | kube::Error::Service(_) | kube::Error::ReadEvents(_) => true,
+        // Auth token refresh failure — may succeed after credential rotation.
+        kube::Error::Auth(_) => true,
+        // Everything else (bad config, serialization, build errors) is permanent.
+        _ => false,
+    };
+    if is_transient {
+        SecretError::Unavailable {
             backend: BACKEND,
             source: Box::new(e),
-        },
-        // 429 (Too Many Requests) and 5xx are transient — mark as retriable.
-        kube::Error::Api(s) if s.code == 429 || s.code >= 500 => SecretError::Unavailable {
+        }
+    } else {
+        SecretError::Backend {
             backend: BACKEND,
             source: Box::new(e),
-        },
-        _ => SecretError::Backend {
-            backend: BACKEND,
-            source: Box::new(e),
-        },
+        }
     }
 }
 
