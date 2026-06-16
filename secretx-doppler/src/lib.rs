@@ -29,6 +29,8 @@
 //! # Zeroization
 //!
 //! `DOPPLER_TOKEN` is stored as `Zeroizing<String>` and zeroed when this backend is dropped.
+//! Note: `std::env::var()` returns a plain `String` that is wrapped in `Zeroizing` — the
+//! environment variable's own memory and the intermediate `String` are not zeroed.
 //! The raw HTTP response buffer from reqwest (`bytes::Bytes`) is **not** zeroed on drop —
 //! this is unavoidable at the reqwest layer, and the secret content lands there before any
 //! parsing begins.  Because the secret is already in non-Zeroizing heap memory at that point,
@@ -51,8 +53,18 @@ pub struct DopplerBackend {
     project: String,
     config: String,
     name: String,
-    // Zeroizing ensures the token is cleared from memory when the backend drops.
+    // Zeroizing zeroes this copy on drop; the env var's own memory is not zeroed.
     token: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for DopplerBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DopplerBackend")
+            .field("project", &self.project)
+            .field("config", &self.config)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DopplerBackend {
