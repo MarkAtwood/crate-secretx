@@ -70,6 +70,12 @@ impl SecretValue {
         self.0
     }
 
+    /// Construct from an already-zeroizing buffer without creating a
+    /// non-`Zeroizing` intermediate copy.
+    pub fn from_zeroizing(z: Zeroizing<Vec<u8>>) -> Self {
+        SecretValue(z)
+    }
+
     /// Decode as UTF-8 without copying. Fails if not valid UTF-8.
     pub fn as_str(&self) -> Result<&str, SecretError> {
         std::str::from_utf8(&self.0)
@@ -126,6 +132,12 @@ impl SecretValue {
     ) -> Result<SecretValue, SecretError> {
         let raw = json_navigate(self.as_bytes(), path)?;
         json_extract_string_field(raw, field)
+    }
+}
+
+impl From<Zeroizing<Vec<u8>>> for SecretValue {
+    fn from(z: Zeroizing<Vec<u8>>) -> Self {
+        SecretValue(z)
     }
 }
 
