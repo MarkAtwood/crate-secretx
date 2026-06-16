@@ -2,7 +2,7 @@
 
 Linux kernel keyring backend for [secretx](https://crates.io/crates/secretx).
 
-Reads and writes secrets via the Linux kernel [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html). No daemon required — secrets are stored in kernel memory, survive reboots for a configurable window (default: a few days), and are access-controlled by the kernel.
+Reads and writes secrets via the Linux kernel [persistent keyring](https://www.man7.org/linux/man-pages/man7/persistent-keyring.7.html). No daemon required — secrets are stored in kernel memory, survive across logout/login sessions for a configurable window (default: a few days), and are access-controlled by the kernel. Secrets do **not** survive reboots.
 
 ## URI
 
@@ -37,7 +37,7 @@ let value = store.get().await?;
 
 - Secrets are stored in kernel memory — never written to disk as plaintext.
 - Access is controlled by the kernel's UID-based keyring permissions.
-- The persistent keyring survives reboots but expires after a configurable window (default: a few days).
+- The persistent keyring survives across logouts but expires after a configurable window (default: a few days). It does **not** survive reboots.
 - For encrypted-at-rest storage, consider `secretx-systemd` (TPM2-encrypted, tmpfs-backed) or a cloud backend.
 
 ## Part of secretx
