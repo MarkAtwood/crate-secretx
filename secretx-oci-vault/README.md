@@ -33,8 +33,8 @@ This maps to the OCI Vault Cryptographic Operations service. The private key nev
 
 ```toml
 [dependencies]
-secretx-oci-vault = "0.3"
-secretx-core = "0.3"
+secretx-oci-vault = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

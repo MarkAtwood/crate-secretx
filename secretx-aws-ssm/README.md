@@ -19,8 +19,8 @@ SSM paths that start with `/` use a leading `/` in the path component of the URI
 
 ```toml
 [dependencies]
-secretx-aws-ssm = "0.2"
-secretx-core = "0.2"
+secretx-aws-ssm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

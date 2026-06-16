@@ -17,8 +17,8 @@ secretx:aws-kms:<key-id>[?algorithm=<algo>]
 
 ```toml
 [dependencies]
-secretx-aws-kms = "0.2"
-secretx-core = "0.2"
+secretx-aws-kms = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

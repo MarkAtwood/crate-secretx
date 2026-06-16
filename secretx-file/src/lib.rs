@@ -231,22 +231,22 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "file",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "file",
+    |uri: &str| {
         FileBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "file",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "file",
+    |uri: &str| {
         FileBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

@@ -403,22 +403,22 @@ impl WritableSecretStore for GcpSmBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "gcp-sm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "gcp-sm",
+    |uri: &str| {
         GcpSmBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "gcp-sm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "gcp-sm",
+    |uri: &str| {
         GcpSmBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

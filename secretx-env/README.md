@@ -14,8 +14,8 @@ secretx:env:<VAR_NAME>
 
 ```toml
 [dependencies]
-secretx-env = "0.2"
-secretx-core = "0.2"
+secretx-env = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

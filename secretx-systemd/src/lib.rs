@@ -125,13 +125,13 @@ impl SecretStore for SystemdCredsBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "systemd",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "systemd",
+    |uri: &str| {
         SystemdCredsBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

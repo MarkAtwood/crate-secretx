@@ -58,8 +58,8 @@ installation:
 
 ```toml
 [dependencies]
-secretx-barbican = "0.3"
-secretx-core = "0.3"
+secretx-barbican = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

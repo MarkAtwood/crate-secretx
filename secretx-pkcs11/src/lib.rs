@@ -48,9 +48,10 @@ pub struct Pkcs11Backend {
     slot: cryptoki::slot::Slot,
     label: String,
     user_pin: Option<Zeroizing<String>>,
-    // Cached result of detect_algorithm(). Populated on first call to algorithm().
-    // Arc<OnceLock> so the cache can be shared with spawn_blocking closures without
-    // requiring &self to be 'static.
+    // Cached algorithm, populated by sign() on first call.  algorithm() reads
+    // this cache but never performs I/O itself.
+    // Arc<OnceLock> so the cache can be shared with spawn_blocking closures
+    // without requiring &self to be 'static.
     algorithm_cache: Arc<std::sync::OnceLock<SigningAlgorithm>>,
 }
 
@@ -143,14 +144,6 @@ impl Pkcs11Backend {
                 source: e.into(),
             })?;
         handles.into_iter().next().ok_or(SecretError::NotFound)
-    }
-
-    /// Determine the key algorithm stored under `self.label`.
-    ///
-    /// Inspects `CKA_KEY_TYPE` of the `CKO_PRIVATE_KEY` object. For EC keys,
-    /// also reads `CKA_EC_PARAMS` and verifies the curve is P-256.
-    fn detect_algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
-        pkcs11_detect_algorithm(&self.ctx, self.slot, &self.label, &self.user_pin)
     }
 
     /// Read `CKA_MODULUS_BITS` from an RSA private key and verify the key size.
@@ -594,53 +587,45 @@ impl SigningBackend for Pkcs11Backend {
         })?
     }
 
-    /// Returns the algorithm based on `CKA_KEY_TYPE` of the private key object.
+    /// Returns the cached algorithm, or errors if the cache is cold.
     ///
-    /// Returns `Err` if the HSM is unreachable or no private key object with
-    /// this label exists.  The result is cached after the first successful call
-    /// so subsequent invocations do not open an HSM session.
-    ///
-    /// Note: this is a synchronous method (required by the `SigningBackend` trait).
-    /// On the first call (cold cache) it opens an HSM session, which blocks the
-    /// current thread.  When called from async code, prefer calling `sign()` or
-    /// `public_key_der()` directly — those methods dispatch all HSM I/O via
-    /// `spawn_blocking` and populate the cache as a side effect.
+    /// This method never performs HSM I/O.  Call [`sign`](SigningBackend::sign)
+    /// or [`public_key_der`](SigningBackend::public_key_der) first to detect
+    /// the key type and warm the cache.
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
-        // Return the cached value if a previous call succeeded.
-        if let Some(&algo) = self.algorithm_cache.get() {
-            return Ok(algo);
-        }
-        let algo = self.detect_algorithm()?;
-        // Best-effort cache: if another thread raced us, discard our result.
-        let _ = self.algorithm_cache.set(algo);
-        Ok(algo)
+        self.algorithm_cache.get().copied().ok_or_else(|| SecretError::Backend {
+            backend: "pkcs11",
+            source: "algorithm not yet detected; call sign() or public_key_der() first \
+                     to warm the cache"
+                .into(),
+        })
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "pkcs11",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "pkcs11",
+    |uri: &str| {
         Pkcs11Backend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::SigningBackendRegistration {
-    name: "pkcs11",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::SigningBackendRegistration::new(
+    "pkcs11",
+    |uri: &str| {
         Pkcs11Backend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "pkcs11",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "pkcs11",
+    |uri: &str| {
         Pkcs11Backend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

@@ -21,8 +21,8 @@ secretx:local-signing:/etc/secrets/rsa.der?algorithm=rsa-pss-2048
 
 ```toml
 [dependencies]
-secretx-local-signing = "0.2"
-secretx-core = "0.2"
+secretx-local-signing = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

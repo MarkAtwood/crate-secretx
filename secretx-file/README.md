@@ -17,8 +17,8 @@ secretx:file:relative/path          →  reads relative/path
 
 ```toml
 [dependencies]
-secretx-file = "0.2"
-secretx-core = "0.2"
+secretx-file = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

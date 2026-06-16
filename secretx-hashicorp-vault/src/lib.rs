@@ -324,22 +324,22 @@ impl WritableSecretStore for VaultBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "vault",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "vault",
+    |uri: &str| {
         VaultBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "vault",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "vault",
+    |uri: &str| {
         VaultBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

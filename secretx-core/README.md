@@ -6,7 +6,7 @@ Core traits and types for the [secretx](https://crates.io/crates/secretx) secret
 
 ## Key types
 
-**`SecretStore`** — the main async trait: `get`, `put`, `refresh`. All backends implement this.
+**`SecretStore`** — the main async trait: `get` and `refresh`. All backends implement this.
 
 **`SigningBackend`** — for HSM-resident keys that must never leave hardware: `sign`, `public_key_der`, `algorithm`.
 
@@ -22,7 +22,7 @@ Application code depends on `secretx-core` for trait methods and error handling.
 
 ```toml
 [dependencies]
-secretx-core = "0.2"
+secretx-core = "0.4"
 ```
 
 ```rust

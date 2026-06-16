@@ -28,8 +28,8 @@ FIPS 140 certification is not available on this backend.
 
 ```toml
 [dependencies]
-secretx-tencent-ssm = "0.3"
-secretx-core = "0.3"
+secretx-tencent-ssm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

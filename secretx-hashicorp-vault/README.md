@@ -19,8 +19,8 @@ secretx:vault:<mount>/<secret-path>[?field=<json_field>&addr=<vault_addr>]
 
 ```toml
 [dependencies]
-secretx-hashicorp-vault = "0.2"
-secretx-core = "0.2"
+secretx-hashicorp-vault = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

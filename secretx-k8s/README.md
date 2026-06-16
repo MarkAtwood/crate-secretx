@@ -60,8 +60,8 @@ pod volume mount or env var entry.
 
 ```toml
 [dependencies]
-secretx-k8s = "0.3"
-secretx-core = "0.3"
+secretx-k8s = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

@@ -29,8 +29,8 @@ multi-entry secrets, use `?field=` to be explicit.
 
 ```toml
 [dependencies]
-secretx-yandex-lockbox = "0.3"
-secretx-core = "0.3"
+secretx-yandex-lockbox = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

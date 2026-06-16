@@ -23,8 +23,8 @@ secretx:desktop:<service>/<account>
 
 ```toml
 [dependencies]
-secretx-desktop = "0.3"
-secretx-core = "0.3"
+secretx-desktop = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

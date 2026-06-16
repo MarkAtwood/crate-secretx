@@ -19,8 +19,8 @@ secretx:pkcs11:<slot>/<label>[?lib=<path>&pin=<pin>]
 
 ```toml
 [dependencies]
-secretx-pkcs11 = "0.2"
-secretx-core = "0.2"
+secretx-pkcs11 = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

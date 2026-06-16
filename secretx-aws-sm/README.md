@@ -16,8 +16,8 @@ secretx:aws-sm:<name>[?field=<json_field>]
 
 ```toml
 [dependencies]
-secretx-aws-sm = "0.2"
-secretx-core = "0.2"
+secretx-aws-sm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

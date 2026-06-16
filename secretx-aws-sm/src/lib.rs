@@ -256,17 +256,17 @@ impl WritableSecretStore for AwsSmBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "aws-sm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "aws-sm",
+    |uri: &str| {
         AwsSmBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "aws-sm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "aws-sm",
+    |uri: &str| {
         // Reject ?field= at construction time: put() cannot write a single
         // JSON field without a read-modify-write race.  Fail early rather than
         // returning InvalidUri from put() at rotation time.
@@ -284,7 +284,7 @@ inventory::submit!(secretx_core::WritableBackendRegistration {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

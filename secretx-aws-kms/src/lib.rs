@@ -342,13 +342,13 @@ impl SecretStore for AwsKmsBackend {
     }
 }
 
-inventory::submit!(secretx_core::SigningBackendRegistration {
-    name: "aws-kms",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::SigningBackendRegistration::new(
+    "aws-kms",
+    |uri: &str| {
         AwsKmsBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
