@@ -87,6 +87,7 @@ fn sign_sync(backend: &Arc<dyn SigningBackend>, msg: &[u8]) -> Result<Vec<u8>, S
                 .block_on(backend.sign(msg))
         })
         .join()
+        // Panic payload (Box<dyn Any + Send>) can't be reliably downcasted to a message.
         .unwrap_or_else(|_| {
             Err(SecretError::Backend {
                 backend: "signature-adapter",
