@@ -269,10 +269,31 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             type_: Some("Opaque".to_owned()),
             ..Default::default()
         };
-        api.create(&PostParams::default(), &new_secret)
-            .await
-            .map(|_| ())
-            .map_err(map_kube_error)
+        match api.create(&PostParams::default(), &new_secret).await {
+            Ok(_) => Ok(()),
+            // Race: another writer created the Secret between our PATCH 404
+            // and this POST.  Retry the PATCH once — the Secret now exists.
+            Err(kube::Error::Api(ref s)) if s.is_already_exists() => {
+                let retry_data = {
+                    let mut m = BTreeMap::new();
+                    m.insert(key_name.to_owned(), ByteString(bytes.to_vec()));
+                    m
+                };
+                let retry_secret = K8sSecret {
+                    data: Some(retry_data),
+                    ..Default::default()
+                };
+                api.patch(
+                    &self.name,
+                    &PatchParams::default(),
+                    &Patch::Merge(retry_secret),
+                )
+                .await
+                .map(|_| ())
+                .map_err(map_kube_error)
+            }
+            Err(e) => Err(map_kube_error(e)),
+        }
     }
 }
 
