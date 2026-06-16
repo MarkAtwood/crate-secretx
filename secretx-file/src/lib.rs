@@ -109,11 +109,7 @@ impl SecretStore for FileBackend {
             // Pre-size a Zeroizing buffer from file metadata to avoid
             // reallocation-induced leaks of partial secret bytes.
             read_file_zeroizing(&path)
-                .map(|mut buf| {
-                    // Move bytes out of Zeroizing (leaves empty vec that is
-                    // no-op to zeroize on drop). String::into_bytes()-equivalent.
-                    SecretValue::new(std::mem::take(&mut *buf))
-                })
+                .map(SecretValue::from_zeroizing)
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::NotFound => SecretError::NotFound,
                     _ => SecretError::Backend {
