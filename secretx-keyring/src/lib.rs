@@ -43,6 +43,8 @@
 //! # }
 //! ```
 
+use std::sync::Arc;
+
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
@@ -87,8 +89,8 @@ fn require_persistent_keyring() -> Result<(), SecretError> {
 /// non-empty (the kernel keyutils subsystem rejects empty secrets).
 #[derive(Debug)]
 pub struct KeyringBackend {
-    service: String,
-    account: String,
+    service: Arc<str>,
+    account: Arc<str>,
 }
 
 impl KeyringBackend {
@@ -138,8 +140,8 @@ impl KeyringBackend {
             ));
         }
         Ok(Self {
-            service: service.to_string(),
-            account: account.to_string(),
+            service: Arc::from(service),
+            account: Arc::from(account),
         })
     }
 }
@@ -279,16 +281,16 @@ mod tests {
     #[test]
     fn from_uri_ok() {
         let b = KeyringBackend::from_uri("secretx:keyring:my-app/api-key").unwrap();
-        assert_eq!(b.service, "my-app");
-        assert_eq!(b.account, "api-key");
+        assert_eq!(&*b.service, "my-app");
+        assert_eq!(&*b.account, "api-key");
     }
 
     #[test]
     fn from_uri_ok_nested_account() {
         // account portion may contain slashes; only the first '/' is the separator.
         let b = KeyringBackend::from_uri("secretx:keyring:svc/user/sub").unwrap();
-        assert_eq!(b.service, "svc");
-        assert_eq!(b.account, "user/sub");
+        assert_eq!(&*b.service, "svc");
+        assert_eq!(&*b.account, "user/sub");
     }
 
     #[test]

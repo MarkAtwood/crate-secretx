@@ -165,17 +165,15 @@ impl VaultBackend {
             ));
         }
 
-        let (mount, secret_path) = match parsed.path().find('/') {
-            Some(i) => (
-                parsed.path()[..i].to_string(),
-                parsed.path()[i + 1..].to_string(),
-            ),
-            None => {
-                return Err(SecretError::InvalidUri(
+        let (mount, secret_path) = parsed
+            .path()
+            .split_once('/')
+            .map(|(m, p)| (m.to_string(), p.to_string()))
+            .ok_or_else(|| {
+                SecretError::InvalidUri(
                     "vault URI must be secretx:vault:<mount>/<path>".into(),
-                ))
-            }
-        };
+                )
+            })?;
 
         if secret_path.is_empty() {
             return Err(SecretError::InvalidUri(
