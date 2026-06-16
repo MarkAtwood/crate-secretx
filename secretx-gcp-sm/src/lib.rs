@@ -92,12 +92,12 @@ enum SecretVersion {
 /// The token is read **once** at construction and reused for the lifetime of
 /// this object.  Tokens from `gcloud auth print-access-token` expire after
 /// **1 hour**.  In a long-running process, calls made after expiry will fail
-/// with `SecretError::Unavailable` (HTTP 401 with an expiry hint message).
-/// There is no automatic refresh.
+/// with `SecretError::Backend` (HTTP 401 — retrying with the same token will
+/// not help).  There is no automatic refresh.
 ///
-/// Workaround for daemons: handle `SecretError::Unavailable` by dropping this
-/// backend and constructing a fresh one with an updated `GCP_ACCESS_TOKEN`, or
-/// store a factory closure and reconstruct on each use.  For production workloads, prefer [Workload Identity] or a
+/// Workaround for daemons: handle the 401 `SecretError::Backend` by dropping
+/// this backend and constructing a fresh one with an updated
+/// `GCP_ACCESS_TOKEN`, or store a factory closure and reconstruct on each use.  For production workloads, prefer [Workload Identity] or a
 /// service account key with the [Google Cloud Rust client library], which
 /// handles token refresh automatically.
 ///
@@ -229,9 +229,10 @@ fn add_version_url(project: &str, secret: &str) -> String {
 /// Map a non-successful HTTP status to the appropriate [`SecretError`].
 ///
 /// - 5xx and 429 codes are transient (→ `Unavailable`).
-/// - 401 is mapped to `Unavailable` with an explanatory message: `GCP_ACCESS_TOKEN` is captured
-///   at construction and never refreshed.  When the token expires the API returns 401; callers
-///   who handle `Unavailable` can drop the backend and reconstruct with a fresh token.
+/// - 5xx and 429 codes are transient (→ `Unavailable`).
+/// - 401 is mapped to `Backend` (permanent): the token is expired or invalid,
+///   retrying with the same token will not help.  The error message suggests
+///   reconstructing the backend with a fresh `GCP_ACCESS_TOKEN`.
 /// - All other non-2xx codes are permanent configuration/request errors (→ `Backend`).
 fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
     let msg = if detail.is_empty() {
@@ -245,13 +246,10 @@ fn map_http_status(status: reqwest::StatusCode, detail: &str) -> SecretError {
             source: msg.into(),
         }
     } else if status == 401 {
-        // The GCP access token is stored at construction time and never refreshed.
-        // A 401 most likely means the token has expired.  Signal Unavailable so
-        // callers know to reconstruct the backend with a fresh GCP_ACCESS_TOKEN.
-        SecretError::Unavailable {
+        SecretError::Backend {
             backend: BACKEND,
             source: format!(
-                "{msg} — GCP_ACCESS_TOKEN may have expired; \
+                "{msg} — GCP_ACCESS_TOKEN may have expired or is invalid; \
                  reconstruct the backend with a fresh token"
             )
             .into(),
@@ -658,11 +656,12 @@ mod tests {
     }
 
     #[test]
-    fn map_http_status_401_is_unavailable() {
+    fn map_http_status_401_is_backend() {
+        // 401 is permanent — retrying with the same expired token won't help.
         let err = map_http_status(reqwest::StatusCode::UNAUTHORIZED, "token expired");
         assert!(
-            matches!(err, SecretError::Unavailable { .. }),
-            "HTTP 401 must map to Unavailable so callers can refresh token, got: {err:?}"
+            matches!(err, SecretError::Backend { .. }),
+            "HTTP 401 must map to Backend (permanent auth failure), got: {err:?}"
         );
     }
 
