@@ -128,10 +128,12 @@ mod tests {
 
         let var_name = "SECRETX_TEST_NON_UTF8_XYZZY9999";
         // 0xFF is never valid in UTF-8.
-        std::env::set_var(var_name, OsStr::from_bytes(&[0xFF, 0xFE]));
+        // SAFETY: ENV_LOCK (or test serialization) prevents concurrent env access.
+        // These become unsafe fn in edition 2024.
+        unsafe { std::env::set_var(var_name, OsStr::from_bytes(&[0xFF, 0xFE])) };
         let b = EnvBackend::from_uri(&format!("secretx:env:{var_name}")).unwrap();
         let result = b.get().await;
-        std::env::remove_var(var_name);
+        unsafe { std::env::remove_var(var_name) };
 
         assert!(
             matches!(result, Err(SecretError::DecodeFailed(_))),
