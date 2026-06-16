@@ -182,9 +182,12 @@ impl Pkcs11Backend {
             }
         }
 
-        // CKA_MODULUS_BITS not available — fall back to assuming 2048 since
-        // we have no other way to determine the key size from PKCS#11.
-        Ok(SigningAlgorithm::RsaPss2048Sha256)
+        Err(SecretError::Backend {
+            backend: "pkcs11",
+            source: "RSA private key is missing CKA_MODULUS_BITS; \
+                     cannot determine key size"
+                .into(),
+        })
     }
 
     /// Read `CKA_EC_PARAMS` from an EC private key and map to a [`SigningAlgorithm`].
