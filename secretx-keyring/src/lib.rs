@@ -333,17 +333,15 @@ mod tests {
     fn from_uri_field_selector_rejected() {
         // Keyring values are opaque strings; ?field= is not supported and must
         // be rejected at construction time.
-        let result = KeyringBackend::from_uri("secretx:keyring:my-app/api-key?field=token");
-        match result {
-            Err(SecretError::InvalidUri(msg)) => {
-                assert!(
-                    msg.contains("keyring does not support ?field="),
-                    "error must mention the limitation, got: {msg}"
-                );
-            }
-            Err(e) => panic!("expected InvalidUri, got: {e}"),
-            Ok(_) => panic!("expected InvalidUri, got Ok"),
-        }
+        let Err(SecretError::InvalidUri(msg)) =
+            KeyringBackend::from_uri("secretx:keyring:my-app/api-key?field=token")
+        else {
+            panic!("expected InvalidUri");
+        };
+        assert!(
+            msg.contains("keyring does not support ?field="),
+            "error must mention the limitation, got: {msg}"
+        );
     }
 
     // ── Integration tests (require OS keychain) ───────────────────────────────
