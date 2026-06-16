@@ -67,6 +67,24 @@ impl K8sBackend {
         }
 
         let key = parsed.param("key").map(str::to_owned);
+        // K8s Secret data keys must match [-._a-zA-Z0-9]+; reject invalid
+        // keys at construction rather than surfacing confusing runtime errors.
+        if let Some(ref k) = key {
+            if k.is_empty() {
+                return Err(SecretError::InvalidUri(
+                    "k8s URI `?key=` value must not be empty".into(),
+                ));
+            }
+            if !k
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+            {
+                return Err(SecretError::InvalidUri(format!(
+                    "k8s URI `?key={k}` contains invalid characters; \
+                     data keys must match [-._a-zA-Z0-9]+"
+                )));
+            }
+        }
 
         Ok(Self {
             namespace: namespace.to_owned(),
@@ -393,6 +411,24 @@ mod tests {
         assert!(
             matches!(result, Err(SecretError::InvalidUri(_))),
             "slash in name must return InvalidUri, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_uri_empty_key_rejected() {
+        let result = K8sBackend::from_uri("secretx:k8s:default/my-secret?key=");
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "empty ?key= must return InvalidUri, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_from_uri_invalid_key_chars_rejected() {
+        let result = K8sBackend::from_uri("secretx:k8s:default/my-secret?key=foo/bar");
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "key with '/' must return InvalidUri, got: {result:?}"
         );
     }
 }
