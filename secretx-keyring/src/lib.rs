@@ -269,6 +269,14 @@ mod tests {
     }
 
     #[test]
+    fn from_uri_empty_service() {
+        assert!(matches!(
+            KeyringBackend::from_uri("secretx:keyring:/account"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
     fn from_uri_wrong_backend() {
         assert!(matches!(
             KeyringBackend::from_uri("secretx:env:MY_VAR"),
