@@ -601,6 +601,10 @@ impl SigningBackend for Pkcs11Backend {
     /// Reads `CKA_PUBLIC_KEY_INFO` from the `CKO_PUBLIC_KEY` object (PKCS#11
     /// v2.40+ tokens store the SPKI directly in this attribute).
     ///
+    /// **Limitation**: tokens that do not populate `CKA_PUBLIC_KEY_INFO` (some
+    /// older YubiHSM, Nitrokey, or pre-v2.40 firmware) will return an error.
+    /// A future version may fall back to constructing SPKI from raw attributes.
+    ///
     /// All PKCS#11 calls are dispatched via `tokio::task::spawn_blocking` to
     /// avoid blocking the async executor.
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
@@ -625,7 +629,10 @@ impl SigningBackend for Pkcs11Backend {
 
             Err(SecretError::Backend {
                 backend: BACKEND,
-                source: "CKA_PUBLIC_KEY_INFO attribute missing on public key object".into(),
+                source: "CKA_PUBLIC_KEY_INFO attribute missing on public key object; \
+                         this token may not populate SPKI (older YubiHSM, Nitrokey, \
+                         or pre-PKCS#11-v2.40 firmware)"
+                    .into(),
             })
         })
         .await
