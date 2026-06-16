@@ -34,7 +34,7 @@ use aws_sdk_kms::operation::sign::SignError;
 use aws_sdk_kms::primitives::Blob;
 use aws_sdk_kms::types::{MessageType, SigningAlgorithmSpec};
 use secretx_core::{
-    SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend,
+    SecretError, SecretUri, SigningAlgorithm, SigningBackend,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -177,10 +177,16 @@ fn ecdsa_der_to_raw_p256(der: &[u8]) -> Result<Vec<u8>, SecretError> {
     if rest.len() < seq_len {
         return Err(parse_err("SEQUENCE truncated"));
     }
+    if rest.len() > seq_len {
+        return Err(parse_err("trailing bytes after SEQUENCE"));
+    }
     let rest = &rest[..seq_len];
 
     let (r, rest) = der_integer(rest).ok_or_else(|| parse_err("invalid INTEGER r"))?;
-    let (s, _) = der_integer(rest).ok_or_else(|| parse_err("invalid INTEGER s"))?;
+    let (s, rest) = der_integer(rest).ok_or_else(|| parse_err("invalid INTEGER s"))?;
+    if !rest.is_empty() {
+        return Err(parse_err("trailing bytes inside SEQUENCE after INTEGER s"));
+    }
 
     fn fixed32(n: &[u8]) -> Result<[u8; 32], &'static str> {
         if n.len() > 32 {
@@ -201,6 +207,9 @@ fn ecdsa_der_to_raw_p256(der: &[u8]) -> Result<Vec<u8>, SecretError> {
 }
 
 /// Parse a DER length field. Returns `Some((length, remaining_bytes))`.
+///
+/// Enforces DER minimal-length encoding (X.690 §10.1): long form is only
+/// accepted when the value cannot be encoded in short form (>= 0x80).
 fn der_length(bytes: &[u8]) -> Option<(usize, &[u8])> {
     let (&first, rest) = bytes.split_first()?;
     if first < 0x80 {
@@ -213,6 +222,14 @@ fn der_length(bytes: &[u8]) -> Option<(usize, &[u8])> {
         let mut len = 0usize;
         for &b in &rest[..n] {
             len = (len << 8) | (b as usize);
+        }
+        // DER requires minimal encoding: reject long-form for values
+        // that fit in short-form (< 0x80), and reject leading zero bytes.
+        if len < 0x80 {
+            return None; // should have used short form
+        }
+        if n == 2 && len < 0x100 {
+            return None; // should have used 1-byte long form
         }
         Some((len, &rest[n..]))
     }
@@ -333,21 +350,9 @@ impl SigningBackend for AwsKmsBackend {
     }
 }
 
-// ── SecretStore (stub) ────────────────────────────────────────────────────────
-
-#[async_trait::async_trait]
-impl SecretStore for AwsKmsBackend {
-    async fn get(&self) -> Result<SecretValue, SecretError> {
-        Err(SecretError::Backend {
-            backend: "aws-kms",
-            source: "aws-kms is a signing-only backend; use SigningBackend".into(),
-        })
-    }
-
-    async fn refresh(&self) -> Result<SecretValue, SecretError> {
-        self.get().await
-    }
-}
+// AwsKmsBackend intentionally does NOT implement SecretStore — it is a
+// signing-only backend.  The umbrella crate rejects aws-kms URIs via
+// from_uri with InvalidUri before any SecretStore method could be reached.
 
 inventory::submit!(secretx_core::SigningBackendRegistration::new(
     "aws-kms",
