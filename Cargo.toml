@@ -19,6 +19,7 @@ members = [
     "secretx-pkcs11",
     "secretx-wolfhsm",
     "secretx-systemd",
+    "secretx-tpm2",
     "secretx-desktop",
     "secretx-signature",
     "secretx",
@@ -78,6 +79,7 @@ k8s-openapi = { version = "0.27", features = ["v1_32"] }
 kube = { version = "3", features = ["client", "config", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+secretx-tpm2 = { path = "secretx-tpm2", version = "0.5.0" }
 sha2 = "0.10"
 signature = "2"
 inventory = "0.3"

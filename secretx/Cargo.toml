@@ -32,6 +32,7 @@ secretx-mem = { workspace = true, optional = true }
 secretx-pkcs11 = { workspace = true, optional = true }
 secretx-wolfhsm = { workspace = true, optional = true }
 secretx-systemd = { workspace = true, optional = true }
+secretx-tpm2 = { workspace = true, optional = true }
 secretx-desktop = { workspace = true, optional = true }
 
 [features]
@@ -54,5 +55,6 @@ mem = ["dep:secretx-mem"]
 pkcs11 = ["dep:secretx-pkcs11"]
 wolfhsm = ["dep:secretx-wolfhsm"]
 systemd = ["dep:secretx-systemd"]
+tpm2 = ["dep:secretx-tpm2"]
 desktop = ["dep:secretx-desktop"]
 blocking = ["secretx-core/blocking"]

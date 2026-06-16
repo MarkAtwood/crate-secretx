@@ -74,6 +74,8 @@ secretx:<backend>:<path>[?options]
 | `secretx:systemd:<name>` | systemd credentials | `$CREDENTIALS_DIRECTORY`; TPM2-encrypted at rest; requires systemd v250+ |
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB`, pin from `PKCS11_PIN` |
+| `secretx:tpm2:nv/0x01000001` | TPM 2.0 NV index | read/write; `?tcti=` for transport |
+| `secretx:tpm2:key/0x81000001` | TPM 2.0 signing key | ECDSA P-256 or RSA-PSS; key never leaves chip |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
 | `secretx:wolfhsm:my-key?server=host:8080&client_id=1` | wolfHSM secure element | TCP, `shm:/name`, or `/path` (UDS); TLS planned; `WOLFHSM_SERVER` fallback |
 | `secretx:k8s:default/my-secret` | Kubernetes Secret | `?key=` to select a single data key |
@@ -97,7 +99,7 @@ secretx = { version = "0.5", features = ["aws-sm", "file"] }
 
 Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
 `cache`, `desktop`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`,
-`k8s`, `keyring`, `local-signing`, `mem` (default), `pkcs11`, `systemd`, `wolfhsm`.
+`k8s`, `keyring`, `local-signing`, `mem` (default), `pkcs11`, `systemd`, `tpm2`, `wolfhsm`.
 
 ```rust
 use secretx::{SecretStore, SecretValue};
@@ -213,6 +215,7 @@ Backend crates have no compile-time feature guards.
 | `secretx-keyring` | Linux kernel keyring backend |
 | `secretx-desktop` | Desktop keychain backend (macOS Keychain, GNOME Keyring, Windows Credential Manager) |
 | `secretx-systemd` | systemd credentials backend (`$CREDENTIALS_DIRECTORY`) |
+| `secretx-tpm2` | TPM 2.0 backend (NV storage + signing) |
 | `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
@@ -299,6 +302,7 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `keyring` | ✅ kernel keyring headless | Linux only; kernel persistent keyring, no daemon required |
 | `desktop` | ⚠️ unit tests only | needs desktop session; macOS/Windows not yet tested |
 | `systemd` | ⚠️ unit tests only | needs systemd v250+ service environment |
+| `tpm2` | ⚠️ unit tests only | needs TPM device or swtpm simulator |
 | `wolfhsm` | ⚠️ unit tests only | requires wolfHSM server or simulator; set `WOLFHSM_SERVER` |
 
 Unit tests (URI parsing, error mapping) pass for all backends regardless of credentials.

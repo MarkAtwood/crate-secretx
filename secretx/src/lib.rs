@@ -82,6 +82,8 @@ use secretx_mem as _;
 use secretx_pkcs11 as _;
 #[cfg(feature = "systemd")]
 use secretx_systemd as _;
+#[cfg(feature = "tpm2")]
+use secretx_tpm2 as _;
 #[cfg(feature = "wolfhsm")]
 use secretx_wolfhsm as _;
 
@@ -228,6 +230,23 @@ mod tests {
         assert!(from_uri("secretx:mem:my-key").is_ok());
     }
 
+    // tpm2 NV URIs dispatch via from_uri; key URIs are signing-only.
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn from_uri_tpm2_nv_dispatches_correctly() {
+        assert!(from_uri("secretx:tpm2:nv/0x01000001").is_ok());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn from_uri_tpm2_key_returns_signing_only() {
+        let result = from_uri("secretx:tpm2:key/0x81000001");
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "tpm2 key URI via from_uri must return InvalidUri"
+        );
+    }
+
     // Signing-only backends routed through from_uri must return InvalidUri.
     #[cfg(feature = "aws-kms")]
     #[test]
@@ -295,6 +314,22 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn from_signing_uri_tpm2_key_dispatches_correctly() {
+        assert!(from_signing_uri("secretx:tpm2:key/0x81000001").is_ok());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn from_signing_uri_tpm2_nv_returns_invalid_uri() {
+        let result = from_signing_uri("secretx:tpm2:nv/0x01000001");
+        assert!(
+            matches!(result, Err(SecretError::InvalidUri(_))),
+            "tpm2 NV URI via from_signing_uri must return InvalidUri"
+        );
+    }
+
     // Non-signing backends routed through from_signing_uri must return InvalidUri.
     // env is always enabled (default feature) so this test always runs.
     #[test]
@@ -325,6 +360,12 @@ mod tests {
     #[test]
     fn from_uri_writable_mem_dispatches_correctly() {
         assert!(from_uri_writable("secretx:mem:my-key").is_ok());
+    }
+
+    #[cfg(feature = "tpm2")]
+    #[test]
+    fn from_uri_writable_tpm2_nv_dispatches_correctly() {
+        assert!(from_uri_writable("secretx:tpm2:nv/0x01000001").is_ok());
     }
 
     // env is read-only; from_uri_writable must reject it.
