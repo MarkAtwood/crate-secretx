@@ -593,12 +593,15 @@ impl SigningBackend for Pkcs11Backend {
     /// or [`public_key_der`](SigningBackend::public_key_der) first to detect
     /// the key type and warm the cache.
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
-        self.algorithm_cache.get().copied().ok_or_else(|| SecretError::Backend {
-            backend: "pkcs11",
-            source: "algorithm not yet detected; call sign() or public_key_der() first \
+        self.algorithm_cache
+            .get()
+            .copied()
+            .ok_or_else(|| SecretError::Backend {
+                backend: "pkcs11",
+                source: "algorithm not yet detected; call sign() or public_key_der() first \
                      to warm the cache"
-                .into(),
-        })
+                    .into(),
+            })
     }
 }
 
