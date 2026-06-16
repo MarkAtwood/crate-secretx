@@ -27,7 +27,7 @@
 //! // backend: Arc<dyn SigningBackend> from secretx::from_signing_uri
 //! let signer = Ed25519Signer::new(backend)?;
 //!
-//! // try_sign returns Result; sign panics on error (see ## Panics).
+//! // try_sign returns Result; sign panics on error.
 //! let sig: ed25519::Signature = signer.try_sign(b"hello")?;
 //! # Ok(())
 //! # }
