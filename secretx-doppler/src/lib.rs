@@ -94,7 +94,13 @@ impl DopplerBackend {
             source: "DOPPLER_TOKEN env var not set".into(),
         })?;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| SecretError::Backend {
+                backend: "doppler",
+                source: e.into(),
+            })?;
         Ok(Self {
             client,
             project: parts[0].to_string(),

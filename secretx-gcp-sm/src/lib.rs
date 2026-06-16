@@ -157,7 +157,13 @@ impl GcpSmBackend {
             })?;
 
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| SecretError::Backend {
+                    backend: "gcp-sm",
+                    source: e.into(),
+                })?,
             project,
             secret,
             version,
