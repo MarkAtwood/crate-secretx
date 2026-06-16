@@ -277,12 +277,14 @@ impl signature::Signer<rsa::pss::Signature> for RsaPssSigner {
     fn try_sign(&self, msg: &[u8]) -> Result<rsa::pss::Signature, signature::Error> {
         let bytes = sign_sync(&self.backend, msg).map_err(signature::Error::from_source)?;
         if bytes.len() != RSA_2048_SIG_LEN {
-            return Err(signature::Error::from_source(SecretError::DecodeFailed(
-                format!(
+            return Err(signature::Error::from_source(SecretError::Backend {
+                backend: "signature-adapter",
+                source: format!(
                     "RSA-PSS 2048 signature must be {RSA_2048_SIG_LEN} bytes, got {}",
                     bytes.len()
-                ),
-            )));
+                )
+                .into(),
+            }));
         }
         rsa::pss::Signature::try_from(bytes.as_slice())
     }
