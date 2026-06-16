@@ -1345,19 +1345,14 @@ pub trait SigningBackend: Send + Sync {
 
     /// Key algorithm identifier.
     ///
-    /// Returns an error if the backend cannot determine the algorithm (e.g. the
-    /// HSM is offline).  For backends where the algorithm is fixed at
-    /// construction time (AWS KMS, local-signing) this always returns `Ok`.
+    /// For backends where the algorithm is fixed at construction time (AWS KMS,
+    /// local-signing) this always returns `Ok`.
     ///
-    /// # Blocking note
-    ///
-    /// This method is synchronous.  HSM-backed implementations (e.g. PKCS#11)
-    /// may open an HSM session on the first call to detect the key type, which
-    /// can block the calling thread for tens of milliseconds.  If you are
-    /// calling this from async code and the algorithm is not yet cached, prefer
-    /// calling [`sign`](SigningBackend::sign) or
-    /// [`public_key_der`](SigningBackend::public_key_der) first — those methods
-    /// use `spawn_blocking` and populate the algorithm cache as a side effect.
+    /// HSM-backed implementations (e.g. PKCS#11) may require a prior call to
+    /// [`sign`](SigningBackend::sign) or
+    /// [`public_key_der`](SigningBackend::public_key_der) to detect and cache
+    /// the key type.  If the cache is cold, `algorithm()` returns an error
+    /// rather than blocking on HSM I/O.
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError>;
 }
 
@@ -1479,29 +1474,62 @@ pub fn get_blocking<S: SecretStore + ?Sized>(store: &S) -> Result<SecretValue, S
 // ── Backend registration ──────────────────────────────────────────────────────
 
 /// Registration entry for a [`SecretStore`] backend.
+#[non_exhaustive]
 pub struct BackendRegistration {
     /// Backend scheme name (e.g. `"env"`, `"file"`, `"aws-sm"`).
     pub name: &'static str,
     /// Factory function: construct a backend from a URI string.
     pub factory: fn(&str) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
 }
+
+impl BackendRegistration {
+    /// Create a new registration entry.
+    pub const fn new(
+        name: &'static str,
+        factory: fn(&str) -> Result<std::sync::Arc<dyn SecretStore>, SecretError>,
+    ) -> Self {
+        Self { name, factory }
+    }
+}
 inventory::collect!(BackendRegistration);
 
 /// Registration entry for a [`WritableSecretStore`] backend.
+#[non_exhaustive]
 pub struct WritableBackendRegistration {
     /// Backend scheme name.
     pub name: &'static str,
     /// Factory function: construct a writable backend from a URI string.
     pub factory: fn(&str) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
 }
+
+impl WritableBackendRegistration {
+    /// Create a new registration entry.
+    pub const fn new(
+        name: &'static str,
+        factory: fn(&str) -> Result<std::sync::Arc<dyn WritableSecretStore>, SecretError>,
+    ) -> Self {
+        Self { name, factory }
+    }
+}
 inventory::collect!(WritableBackendRegistration);
 
 /// Registration entry for a [`SigningBackend`] backend.
+#[non_exhaustive]
 pub struct SigningBackendRegistration {
     /// Backend scheme name.
     pub name: &'static str,
     /// Factory function: construct a signing backend from a URI string.
     pub factory: fn(&str) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
+}
+
+impl SigningBackendRegistration {
+    /// Create a new registration entry.
+    pub const fn new(
+        name: &'static str,
+        factory: fn(&str) -> Result<std::sync::Arc<dyn SigningBackend>, SecretError>,
+    ) -> Self {
+        Self { name, factory }
+    }
 }
 inventory::collect!(SigningBackendRegistration);
 
