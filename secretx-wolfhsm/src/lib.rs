@@ -552,13 +552,11 @@ inventory::submit!(secretx_core::WritableBackendRegistration {
     },
 });
 
-inventory::submit!(secretx_core::SigningBackendRegistration {
-    name: BACKEND,
-    factory: |uri: &str| {
-        WolfHsmBackend::from_uri(uri)
-            .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
-    },
-});
+// SigningBackendRegistration is intentionally NOT registered: the wolfhsm
+// crate does not yet expose EccP256Key::load_from_nvm, so all SigningBackend
+// methods return Unavailable.  Without registration, from_signing_uri()
+// returns InvalidUri — a clear signal that wolfhsm signing is not available.
+// Re-add this once the wolfhsm crate exposes key-loading from NVM.
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
