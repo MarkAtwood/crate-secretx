@@ -16,6 +16,14 @@ secretx:pkcs11:<slot>/<label>[?lib=<path>]
 
 The token PIN is read from the `PKCS11_PIN` environment variable if set.
 
+## Supported signing algorithms
+
+- **ECDSA P-256** (`CKM_ECDSA_SHA256`) — returns raw 64-byte (r‖s) signatures
+- **RSA-PSS 2048** (`CKM_SHA256_RSA_PKCS_PSS`, SHA-256/MGF1-SHA-256/salt=32)
+
+Other key types (P-384, P-521, Ed25519) are not yet supported and will return
+an error at sign time.
+
 ## Usage
 
 ```toml
