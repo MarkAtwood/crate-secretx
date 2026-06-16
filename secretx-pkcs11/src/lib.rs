@@ -32,12 +32,52 @@ use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass};
 use cryptoki::session::UserType;
 use cryptoki::types::AuthPin;
+use cryptoki::error::{Error as CkError, RvError};
 use secretx_core::{
     SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend,
     WritableSecretStore,
 };
 use std::sync::Arc;
 use zeroize::{Zeroize, Zeroizing};
+
+const BACKEND: &str = "pkcs11";
+
+/// Classify a cryptoki error as transient ([`SecretError::Unavailable`]) or
+/// permanent ([`SecretError::Backend`]).
+///
+/// Transient: device/token/session gone (may reconnect), or generic failures
+/// that the PKCS#11 spec says "may succeed on retry".
+/// Permanent: auth failures, bad templates, unsupported mechanisms, etc.
+fn classify_ck(e: CkError) -> SecretError {
+    let is_transient = matches!(
+        &e,
+        CkError::Pkcs11(
+            RvError::DeviceError
+                | RvError::DeviceRemoved
+                | RvError::TokenNotPresent
+                | RvError::TokenNotRecognized
+                | RvError::SessionClosed
+                | RvError::SessionHandleInvalid
+                | RvError::SessionCount
+                | RvError::FunctionFailed
+                | RvError::GeneralError
+                | RvError::HostMemory
+                | RvError::DeviceMemory,
+            _
+        )
+    );
+    if is_transient {
+        SecretError::Unavailable {
+            backend: BACKEND,
+            source: e.into(),
+        }
+    } else {
+        SecretError::Backend {
+            backend: BACKEND,
+            source: e.into(),
+        }
+    }
+}
 
 /// PKCS#11 backend that implements both [`SecretStore`] and [`SigningBackend`].
 ///
@@ -88,27 +128,18 @@ impl Pkcs11Backend {
                 )
             })?;
 
-        let ctx = Pkcs11::new(&lib_path).map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
-            source: e.into(),
-        })?;
+        let ctx = Pkcs11::new(&lib_path).map_err(classify_ck)?;
         ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
 
         let slots = ctx
             .get_slots_with_token()
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
         let slot = slots
             .get(slot_idx)
             .copied()
             .ok_or_else(|| SecretError::Backend {
-                backend: "pkcs11",
+                backend: BACKEND,
                 source: format!(
                     "slot index {slot_idx} not found (only {} slot(s) with a token)",
                     slots.len()
@@ -139,10 +170,7 @@ impl Pkcs11Backend {
         ];
         let handles = session
             .find_objects(&template)
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
         handles.into_iter().next().ok_or(SecretError::NotFound)
     }
 
@@ -155,10 +183,7 @@ impl Pkcs11Backend {
     ) -> Result<SigningAlgorithm, SecretError> {
         let attrs = session
             .get_attributes(handle, &[AttributeType::ModulusBits])
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
 
         for attr in attrs {
             if let Attribute::ModulusBits(bits) = attr {
@@ -166,7 +191,7 @@ impl Pkcs11Backend {
                     return Ok(SigningAlgorithm::RsaPss2048Sha256);
                 }
                 return Err(SecretError::Backend {
-                    backend: "pkcs11",
+                    backend: BACKEND,
                     source: format!(
                         "unsupported RSA key size: {bits} bits; only 2048-bit RSA is supported"
                     )
@@ -176,7 +201,7 @@ impl Pkcs11Backend {
         }
 
         Err(SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: "RSA private key is missing CKA_MODULUS_BITS; \
                      cannot determine key size"
                 .into(),
@@ -195,10 +220,7 @@ impl Pkcs11Backend {
 
         let ec_attrs = session
             .get_attributes(handle, &[AttributeType::EcParams])
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
 
         for ec_attr in ec_attrs {
             if let Attribute::EcParams(params) = ec_attr {
@@ -206,7 +228,7 @@ impl Pkcs11Backend {
                     return Ok(SigningAlgorithm::EcdsaP256Sha256);
                 }
                 return Err(SecretError::Backend {
-                    backend: "pkcs11",
+                    backend: BACKEND,
                     source: format!(
                         "unsupported EC curve (CKA_EC_PARAMS = {:02x?}); only P-256 is supported",
                         params
@@ -217,7 +239,7 @@ impl Pkcs11Backend {
         }
 
         Err(SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: "EC private key is missing CKA_EC_PARAMS".into(),
         })
     }
@@ -234,18 +256,12 @@ fn pkcs11_ro_session(
 ) -> Result<cryptoki::session::Session, SecretError> {
     let session = ctx
         .open_ro_session(slot)
-        .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
-            source: e.into(),
-        })?;
+        .map_err(classify_ck)?;
     if let Some(pin) = user_pin {
         let auth = AuthPin::new(pin.as_str().into());
         session
             .login(UserType::User, Some(&auth))
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
     }
     Ok(session)
 }
@@ -258,18 +274,12 @@ fn pkcs11_rw_session(
 ) -> Result<cryptoki::session::Session, SecretError> {
     let session = ctx
         .open_rw_session(slot)
-        .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
-            source: e.into(),
-        })?;
+        .map_err(classify_ck)?;
     if let Some(pin) = user_pin {
         let auth = AuthPin::new(pin.as_str().into());
         session
             .login(UserType::User, Some(&auth))
-            .map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            .map_err(classify_ck)?;
     }
     Ok(session)
 }
@@ -293,10 +303,7 @@ fn pkcs11_detect_algorithm(
 
     let attrs = session
         .get_attributes(handle, &[AttributeType::KeyType])
-        .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
-            source: e.into(),
-        })?;
+        .map_err(classify_ck)?;
 
     for attr in attrs {
         if let Attribute::KeyType(kt) = attr {
@@ -306,7 +313,7 @@ fn pkcs11_detect_algorithm(
                 return Pkcs11Backend::detect_rsa_algorithm(&session, handle);
             } else {
                 return Err(SecretError::Backend {
-                    backend: "pkcs11",
+                    backend: BACKEND,
                     source: format!("unsupported key type: {kt}").into(),
                 });
             }
@@ -314,7 +321,7 @@ fn pkcs11_detect_algorithm(
     }
 
     Err(SecretError::Backend {
-        backend: "pkcs11",
+        backend: BACKEND,
         source: "could not determine key type from CKA_KEY_TYPE".into(),
     })
 }
@@ -357,10 +364,7 @@ impl SecretStore for Pkcs11Backend {
 
             let attrs = session
                 .get_attributes(handle, &[AttributeType::Value])
-                .map_err(|e| SecretError::Backend {
-                    backend: "pkcs11",
-                    source: e.into(),
-                })?;
+                .map_err(classify_ck)?;
 
             for attr in attrs {
                 if let Attribute::Value(bytes) = attr {
@@ -369,13 +373,13 @@ impl SecretStore for Pkcs11Backend {
             }
 
             Err(SecretError::Backend {
-                backend: "pkcs11",
+                backend: BACKEND,
                 source: "CKA_VALUE attribute missing on data object".into(),
             })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: format!("task join error: {e}").into(),
         })?
     }
@@ -427,10 +431,7 @@ impl WritableSecretStore for Pkcs11Backend {
             let existing =
                 session
                     .find_objects(&template_search)
-                    .map_err(|e| SecretError::Backend {
-                        backend: "pkcs11",
-                        source: e.into(),
-                    })?;
+                    .map_err(classify_ck)?;
 
             // Create the new object first.  Any failure here leaves `existing` intact.
             let mut template_create = vec![
@@ -450,10 +451,7 @@ impl WritableSecretStore for Pkcs11Backend {
                 }
             }
 
-            create_result.map_err(|e| SecretError::Backend {
-                backend: "pkcs11",
-                source: e.into(),
-            })?;
+            create_result.map_err(classify_ck)?;
 
             // Best-effort cleanup: destroy old objects now that the new one is committed.
             // If destroy_object fails the write has still succeeded — the new value is
@@ -469,7 +467,7 @@ impl WritableSecretStore for Pkcs11Backend {
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: format!("task join error: {e}").into(),
         })?
     }
@@ -515,10 +513,7 @@ impl SigningBackend for Pkcs11Backend {
             match algo {
                 SigningAlgorithm::EcdsaP256Sha256 => session
                     .sign(&Mechanism::EcdsaSha256, handle, &message)
-                    .map_err(|e| SecretError::Backend {
-                        backend: "pkcs11",
-                        source: e.into(),
-                    }),
+                    .map_err(classify_ck),
                 SigningAlgorithm::RsaPss2048Sha256 => {
                     let pss = PkcsPssParams {
                         hash_alg: MechanismType::SHA256,
@@ -527,20 +522,17 @@ impl SigningBackend for Pkcs11Backend {
                     };
                     session
                         .sign(&Mechanism::Sha256RsaPkcsPss(pss), handle, &message)
-                        .map_err(|e| SecretError::Backend {
-                            backend: "pkcs11",
-                            source: e.into(),
-                        })
+                        .map_err(classify_ck)
                 }
                 _ => Err(SecretError::Backend {
-                    backend: "pkcs11",
+                    backend: BACKEND,
                     source: format!("unsupported signing algorithm: {algo:?}").into(),
                 }),
             }
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: format!("task join error: {e}").into(),
         })?
     }
@@ -564,10 +556,7 @@ impl SigningBackend for Pkcs11Backend {
 
             let attrs = session
                 .get_attributes(handle, &[AttributeType::PublicKeyInfo])
-                .map_err(|e| SecretError::Backend {
-                    backend: "pkcs11",
-                    source: e.into(),
-                })?;
+                .map_err(classify_ck)?;
 
             for attr in attrs {
                 if let Attribute::PublicKeyInfo(der) = attr {
@@ -576,13 +565,13 @@ impl SigningBackend for Pkcs11Backend {
             }
 
             Err(SecretError::Backend {
-                backend: "pkcs11",
+                backend: BACKEND,
                 source: "CKA_PUBLIC_KEY_INFO attribute missing on public key object".into(),
             })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "pkcs11",
+            backend: BACKEND,
             source: format!("task join error: {e}").into(),
         })?
     }
@@ -597,7 +586,7 @@ impl SigningBackend for Pkcs11Backend {
             .get()
             .copied()
             .ok_or_else(|| SecretError::Backend {
-                backend: "pkcs11",
+                backend: BACKEND,
                 source: "algorithm not yet detected; call sign() or public_key_der() first \
                      to warm the cache"
                     .into(),
