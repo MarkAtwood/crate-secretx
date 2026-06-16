@@ -199,6 +199,12 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
         return Err(e);
     }
 
+    // Fsync the parent directory so the new directory entry is durable.
+    // Without this, a power loss after rename could leave the old entry
+    // (or no entry) on recovery.  Best-effort: ignore errors from read-only
+    // or virtual filesystems where directory fsync is unsupported.
+    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
+
     Ok(())
 }
 
@@ -236,6 +242,9 @@ fn write_secret_file(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
     }
+
+    // Best-effort parent directory fsync for durable directory entry.
+    let _ = std::fs::File::open(parent).and_then(|d| d.sync_all());
 
     Ok(())
 }
