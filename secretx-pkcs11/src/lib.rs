@@ -1,15 +1,15 @@
 //! PKCS#11 HSM backend for secretx.
 //!
-//! URI: `secretx:pkcs11:<slot>/<label>[?lib=<pkcs11-lib-path>]`
+//! URI: `secretx:pkcs11:<slot>/<label>[?lib=<path>&pin=<pin>]`
 //!
 //! - `slot`  — numeric index into the list of slots that have a token present
 //!   (e.g. `0` for the first slot).
 //! - `label` — the `CKA_LABEL` of the target object.
 //! - `lib`   — path to the PKCS#11 shared library.  Falls back to the
 //!   `PKCS11_LIB` environment variable if omitted.
-//!
-//! An optional `PKCS11_PIN` environment variable supplies the user PIN for
-//! sessions that require login (read/write and signing).
+//! - `pin`   — token PIN for login.  Falls back to the `PKCS11_PIN`
+//!   environment variable if omitted.  Use `?pin=` when multiple tokens
+//!   with different PINs are in use.
 //!
 //! # Examples
 //!
@@ -183,7 +183,12 @@ impl Pkcs11Backend {
                 .into(),
             })?;
 
-        let user_pin = std::env::var("PKCS11_PIN").ok().map(Zeroizing::new);
+        // Per-URI ?pin= takes precedence over the process-global PKCS11_PIN
+        // env var, allowing multi-token apps to supply different PINs.
+        let user_pin = parsed
+            .param("pin")
+            .map(|p| Zeroizing::new(p.to_owned()))
+            .or_else(|| std::env::var("PKCS11_PIN").ok().map(Zeroizing::new));
 
         Ok(Self {
             ctx,

@@ -7,14 +7,14 @@ Implements both `SecretStore` (for reading/writing data objects in the HSM token
 ## URI
 
 ```text
-secretx:pkcs11:<slot>/<label>[?lib=<path>]
+secretx:pkcs11:<slot>/<label>[?lib=<path>&pin=<pin>]
 ```
 
 - `slot` — PKCS#11 slot number (integer)
 - `label` — object label in the token
 - `lib` — path to the PKCS#11 shared library (e.g. `/usr/lib/libsofthsm2.so`); defaults to `PKCS11_LIB` env var
-
-The token PIN is read from the `PKCS11_PIN` environment variable if set.
+- `pin` — token PIN for login; defaults to `PKCS11_PIN` env var. Use `?pin=` when
+  multiple tokens with different PINs are in use.
 
 ## Supported signing algorithms
 
