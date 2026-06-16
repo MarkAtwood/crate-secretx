@@ -1,17 +1,24 @@
 //! wolfHSM secure element backend for secretx.
 //!
-//! URI: `secretx:wolfhsm:<label>[?server=<addr>][?client_id=<n>]`
+//! URI: `secretx:wolfhsm:<label>[?server=<addr>&client_id=<n>]`
 //!
 //! - `label` — NVM object label (1–24 bytes, UTF-8). Identifies the data
 //!   object on the wolfHSM server.
 //! - `server` — (optional) wolfHSM server address. Falls back to the
 //!   `WOLFHSM_SERVER` environment variable if absent.
-//!   Format: `host:port` for TCP (e.g. `127.0.0.1:8080`), `[ip]:port` for
-//!   IPv6 TCP, or `/path` for UDS. TCP port must be ≤ 32767 (wolfhsm C
-//!   transport stores port as `i16`).
+//!   Format:
+//!   - `host:port` — TCP (e.g. `127.0.0.1:8080`). Port must be ≤ 32767.
+//!   - `[ip]:port` — IPv6 TCP (e.g. `[::1]:8080`).
+//!   - `/path` — Unix domain socket (requires `uds` feature).
+//!   - `shm:/name` — POSIX shared memory (e.g. `shm:/wolfhsm`). Name must
+//!     start with `/`.
 //! - `client_id` — (optional) wolfHSM client ID (0–255, default 1). wolfHSM
 //!   uses the client ID to namespace NVM objects and keys. Two clients with
 //!   the same `client_id` share the same NVM namespace on the server.
+//! - `req_size` — (optional, SHM only) maximum request packet size in bytes
+//!   (default 4096).
+//! - `resp_size` — (optional, SHM only) maximum response packet size in bytes
+//!   (default 4096).
 //!
 //! # Transport
 //!
@@ -103,6 +110,10 @@ pub struct WolfHsmBackend {
     server: String,
     /// wolfHSM client ID (0–255). Defaults to 1.
     client_id: u8,
+    /// SHM max request packet size (bytes). Only used for `shm:` transport.
+    req_size: u16,
+    /// SHM max response packet size (bytes). Only used for `shm:` transport.
+    resp_size: u16,
     state: Arc<Mutex<WolfHsmState>>,
 }
 
@@ -138,11 +149,13 @@ impl WolfHsmBackend {
             ));
         }
         let server = parsed.param("server").unwrap_or("").to_owned();
+        let req_size = parse_optional_u16(&parsed, "req_size", 4096)?;
+        let resp_size = parse_optional_u16(&parsed, "resp_size", 4096)?;
         // Validate the ?server= address at construction time (pure parsing, no
         // I/O). WOLFHSM_SERVER from the environment is validated lazily at
         // first use because it is not known until then.
         if !server.is_empty() {
-            make_transport(&server)?;
+            make_transport(&server, req_size, resp_size)?;
         }
         let client_id: u8 = match parsed.param("client_id") {
             None => 1,
@@ -156,6 +169,8 @@ impl WolfHsmBackend {
             label,
             server,
             client_id,
+            req_size,
+            resp_size,
             state: Arc::new(Mutex::new(WolfHsmState {
                 client: None,
                 cached_nvm_id: None,
@@ -201,7 +216,21 @@ fn resolve_server(configured: &str) -> Result<String, SecretError> {
     })
 }
 
-fn make_transport(addr: &str) -> Result<Transport, SecretError> {
+fn make_transport(addr: &str, req_size: u16, resp_size: u16) -> Result<Transport, SecretError> {
+    // POSIX shared memory: `shm:/name`.
+    if let Some(name) = addr.strip_prefix("shm:") {
+        if !name.starts_with('/') {
+            return Err(SecretError::InvalidUri(format!(
+                "wolfhsm SHM name must start with '/': `shm:{name}`"
+            )));
+        }
+        return Ok(Transport::Shm {
+            name: name.to_owned(),
+            req_size,
+            resp_size,
+        });
+    }
+
     // Unix domain socket: any path starting with '/'.
     // Requires the `uds` feature on the `wolfhsm` crate.
     if addr.starts_with('/') {
@@ -244,7 +273,7 @@ fn make_transport(addr: &str) -> Result<Transport, SecretError> {
 
     Err(SecretError::InvalidUri(format!(
         "wolfhsm server `{addr}` must be `host:port` (TCP), `[<ip>]:<port>` (IPv6 TCP), \
-         or `/path` (UDS)"
+         `shm:/name` (shared memory), or `/path` (UDS)"
     )))
 }
 
@@ -269,6 +298,22 @@ fn parse_tcp_port(addr: &str, port_str: &str) -> Result<u16, SecretError> {
     Ok(port)
 }
 
+/// Parse an optional `u16` URI parameter, returning `default` if absent.
+fn parse_optional_u16(
+    parsed: &SecretUri,
+    name: &str,
+    default: u16,
+) -> Result<u16, SecretError> {
+    match parsed.param(name) {
+        None => Ok(default),
+        Some(s) => s.parse().map_err(|_| {
+            SecretError::InvalidUri(format!(
+                "wolfhsm `?{name}={s}` is not a valid u16"
+            ))
+        }),
+    }
+}
+
 /// Ensure `state.client` is connected, connecting if necessary.
 ///
 /// Any earlier connection error is retried on the next call — clearing
@@ -277,10 +322,12 @@ fn ensure_connected(
     state: &mut WolfHsmState,
     server: &str,
     client_id: u8,
+    req_size: u16,
+    resp_size: u16,
 ) -> Result<(), SecretError> {
     if state.client.is_none() {
         let addr = resolve_server(server)?;
-        let transport = make_transport(&addr)?;
+        let transport = make_transport(&addr, req_size, resp_size)?;
         let client =
             Client::connect(transport, client_id).map_err(|e| SecretError::Unavailable {
                 backend: BACKEND,
@@ -424,10 +471,12 @@ impl SecretStore for WolfHsmBackend {
         let label = self.label.clone();
         let server = self.server.clone();
         let client_id = self.client_id;
+        let req_size = self.req_size;
+        let resp_size = self.resp_size;
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server, client_id)?;
+            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
             let id = get_cached_or_scan(&mut guard, &label)?;
             let bytes = guard
                 .connected_client()
@@ -444,11 +493,13 @@ impl SecretStore for WolfHsmBackend {
         let label = self.label.clone();
         let server = self.server.clone();
         let client_id = self.client_id;
+        let req_size = self.req_size;
+        let resp_size = self.resp_size;
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
             guard.cached_nvm_id = None;
-            ensure_connected(&mut guard, &server, client_id)?;
+            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
             let id = get_cached_or_scan(&mut guard, &label)?;
             let bytes = guard
                 .connected_client()
@@ -470,11 +521,13 @@ impl WritableSecretStore for WolfHsmBackend {
         let label = self.label.clone();
         let server = self.server.clone();
         let client_id = self.client_id;
+        let req_size = self.req_size;
+        let resp_size = self.resp_size;
         let bytes = value.into_bytes();
 
         tokio::task::spawn_blocking(move || {
             let mut guard = state_arc.lock().map_err(|_| poison_err())?;
-            ensure_connected(&mut guard, &server, client_id)?;
+            ensure_connected(&mut guard, &server, client_id, req_size, resp_size)?;
 
             match find_cached_or_scan(&mut guard, &label)? {
                 FindResult::Found(id) => {
@@ -659,7 +712,7 @@ mod tests {
     #[cfg(feature = "uds")]
     #[test]
     fn transport_uds() {
-        let t = make_transport("/run/wolfhsm.sock").unwrap();
+        let t = make_transport("/run/wolfhsm.sock", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Uds { path } if path == "/run/wolfhsm.sock"));
     }
 
@@ -667,39 +720,39 @@ mod tests {
     #[test]
     fn transport_uds_rejected_without_feature() {
         assert!(matches!(
-            make_transport("/run/wolfhsm.sock"),
+            make_transport("/run/wolfhsm.sock", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
 
     #[test]
     fn transport_tcp_ipv4() {
-        let t = make_transport("127.0.0.1:8080").unwrap();
+        let t = make_transport("127.0.0.1:8080", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { ip, port } if ip == "127.0.0.1" && port == 8080));
     }
 
     #[test]
     fn transport_tcp_hostname() {
-        let t = make_transport("myhost:1234").unwrap();
+        let t = make_transport("myhost:1234", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { ip, port } if ip == "myhost" && port == 1234));
     }
 
     #[test]
     fn transport_tcp_ipv6_bracket() {
-        let t = make_transport("[::1]:8080").unwrap();
+        let t = make_transport("[::1]:8080", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { ip, port } if ip == "::1" && port == 8080));
     }
 
     #[test]
     fn transport_tcp_ipv6_full_bracket() {
-        let t = make_transport("[2001:db8::1]:443").unwrap();
+        let t = make_transport("[2001:db8::1]:443", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { ip, port } if ip == "2001:db8::1" && port == 443));
     }
 
     #[test]
     fn transport_invalid_no_port() {
         assert!(matches!(
-            make_transport("localhostonly"),
+            make_transport("localhostonly", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -707,7 +760,7 @@ mod tests {
     #[test]
     fn transport_invalid_port_not_u16() {
         assert!(matches!(
-            make_transport("host:notaport"),
+            make_transport("host:notaport", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -715,7 +768,7 @@ mod tests {
     #[test]
     fn transport_invalid_port_overflow() {
         assert!(matches!(
-            make_transport("host:65536"),
+            make_transport("host:65536", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -723,7 +776,7 @@ mod tests {
     #[test]
     fn transport_invalid_ipv6_malformed() {
         assert!(matches!(
-            make_transport("[::1]"), // missing port
+            make_transport("[::1]", 4096, 4096), // missing port
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -733,7 +786,7 @@ mod tests {
         // wolfhsm C transport uses i16; ports > 32767 must be InvalidUri, not
         // Unavailable (which implies retriability).
         assert!(matches!(
-            make_transport("host:32768"),
+            make_transport("host:32768", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
@@ -741,22 +794,70 @@ mod tests {
     #[test]
     fn transport_tcp_port_max_valid_ipv4() {
         // 32767 == i16::MAX — the highest port wolfhsm accepts.
-        let t = make_transport("host:32767").unwrap();
+        let t = make_transport("host:32767", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { port, .. } if port == 32767));
     }
 
     #[test]
     fn transport_tcp_port_too_high_ipv6() {
         assert!(matches!(
-            make_transport("[::1]:40000"),
+            make_transport("[::1]:40000", 4096, 4096),
             Err(SecretError::InvalidUri(_))
         ));
     }
 
     #[test]
     fn transport_tcp_port_max_valid_ipv6() {
-        let t = make_transport("[::1]:32767").unwrap();
+        let t = make_transport("[::1]:32767", 4096, 4096).unwrap();
         assert!(matches!(t, Transport::Tcp { port, .. } if port == 32767));
+    }
+
+    // ── SHM transport ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn transport_shm() {
+        let t = make_transport("shm:/wolfhsm", 4096, 4096).unwrap();
+        assert!(matches!(t, Transport::Shm { name, req_size, resp_size }
+            if name == "/wolfhsm" && req_size == 4096 && resp_size == 4096));
+    }
+
+    #[test]
+    fn transport_shm_custom_sizes() {
+        let t = make_transport("shm:/wolfhsm", 8192, 2048).unwrap();
+        assert!(matches!(t, Transport::Shm { req_size, resp_size, .. }
+            if req_size == 8192 && resp_size == 2048));
+    }
+
+    #[test]
+    fn transport_shm_missing_slash() {
+        assert!(matches!(
+            make_transport("shm:wolfhsm", 4096, 4096),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_shm_server() {
+        if std::env::var("WOLFHSM_SERVER").is_ok() {
+            return;
+        }
+        let b = WolfHsmBackend::from_uri("secretx:wolfhsm:my-key?server=shm:/wolfhsm").unwrap();
+        assert_eq!(b.server, "shm:/wolfhsm");
+        assert_eq!(b.req_size, 4096);
+        assert_eq!(b.resp_size, 4096);
+    }
+
+    #[test]
+    fn from_uri_shm_custom_sizes() {
+        if std::env::var("WOLFHSM_SERVER").is_ok() {
+            return;
+        }
+        let b = WolfHsmBackend::from_uri(
+            "secretx:wolfhsm:my-key?server=shm:/wolfhsm&req_size=8192&resp_size=2048",
+        )
+        .unwrap();
+        assert_eq!(b.req_size, 8192);
+        assert_eq!(b.resp_size, 2048);
     }
 
     // ── SecretStore / SigningBackend (no server) ──────────────────────────────
