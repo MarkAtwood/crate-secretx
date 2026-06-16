@@ -46,7 +46,7 @@ secretx-hashicorp-vault = { path = "secretx-hashicorp-vault", version = "0.4.0" 
 secretx-k8s = { path = "secretx-k8s", version = "0.4.0" }
 secretx-keyring = { path = "secretx-keyring", version = "0.4.0" }
 secretx-pkcs11 = { path = "secretx-pkcs11", version = "0.4.0" }
-secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.4.0" }
+secretx-wolfhsm = { path = "secretx-wolfhsm", version = "0.4.1" }
 secretx-systemd = { path = "secretx-systemd", version = "0.4.0" }
 secretx-desktop = { path = "secretx-desktop", version = "0.4.0" }
 async-trait = "0.1"
