@@ -53,14 +53,19 @@ use zeroize::Zeroizing;
 pub struct SecretValue(Zeroizing<Vec<u8>>);
 
 impl SecretValue {
+    /// Wrap raw bytes in a `SecretValue`.
+    ///
+    /// The bytes are moved into a [`Zeroizing`] container and zeroed on drop.
     pub fn new(bytes: Vec<u8>) -> Self {
         SecretValue(Zeroizing::new(bytes))
     }
 
+    /// Borrow the secret bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
+    /// Consume the `SecretValue` and return the inner [`Zeroizing<Vec<u8>>`].
     pub fn into_bytes(self) -> Zeroizing<Vec<u8>> {
         self.0
     }
