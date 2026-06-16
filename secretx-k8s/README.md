@@ -31,6 +31,27 @@ key's value. For Secrets with more than one key, `?key=<name>` is required; `get
   no `resourceVersion` is required.  Keys owned by other field managers are left
   untouched.
 
+## Required RBAC
+
+| Use case | Verbs |
+|---|---|
+| Read only (`get`) | `get` on `secrets` |
+| Write with `?key=` | `get`, `patch`, `create` on `secrets` |
+| Write without `?key=` (SSA) | `get`, `patch`, `create` on `secrets` |
+
+Example `Role`:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secretx-k8s
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch", "create"]
+```
+
 ## Auth
 
 Auth is resolved in order:
