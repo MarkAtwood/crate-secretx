@@ -188,7 +188,10 @@ impl Pkcs11Backend {
         })
     }
 
-    /// Find the first object matching `class` and `CKA_LABEL == label`.
+    /// Find the unique object matching `class` and `CKA_LABEL == label`.
+    ///
+    /// Returns [`SecretError::NotFound`] if no match, or [`SecretError::Backend`]
+    /// if more than one match (ambiguous — operator must clean up duplicates).
     fn find_object(
         session: &cryptoki::session::Session,
         label: &str,
@@ -201,6 +204,17 @@ impl Pkcs11Backend {
         let handles = session
             .find_objects(&template)
             .map_err(classify_ck)?;
+        if handles.len() > 1 {
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: format!(
+                    "found {} objects with label `{label}` and class {class:?}; \
+                     expected exactly one (clean up duplicates on the token)",
+                    handles.len()
+                )
+                .into(),
+            });
+        }
         handles.into_iter().next().ok_or(SecretError::NotFound)
     }
 
