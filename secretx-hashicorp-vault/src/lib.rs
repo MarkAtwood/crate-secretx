@@ -72,6 +72,28 @@ use zeroize::Zeroizing;
 
 const BACKEND: &str = "vault";
 
+/// Percent-encode each segment of a Vault path for safe URL interpolation.
+///
+/// Splits on `/`, encodes each segment (preserving `/` as the delimiter),
+/// and reassembles.  This prevents `?`, `#`, ` `, `%` and other URL-reserved
+/// characters in mount names or secret paths from corrupting the request URL.
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            let mut out = String::with_capacity(seg.len());
+            for b in seg.bytes() {
+                if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+                    out.push(b as char);
+                } else {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Map a non-successful HTTP status to the appropriate [`SecretError`].
 ///
 /// 5xx codes and HTTP 429 Too Many Requests are transient (→ `Unavailable`);
@@ -189,7 +211,12 @@ impl SecretStore for VaultBackend {
     /// API. When no `?field=` parameter is set, the KV v2 data map is returned
     /// serialized as a JSON object.
     async fn get(&self) -> Result<SecretValue, SecretError> {
-        let url = format!("{}/v1/{}/data/{}", self.addr, self.mount, self.secret_path);
+        let url = format!(
+            "{}/v1/{}/data/{}",
+            self.addr,
+            encode_path(&self.mount),
+            encode_path(&self.secret_path)
+        );
 
         let resp = self
             .http_client
@@ -293,7 +320,12 @@ impl WritableSecretStore for VaultBackend {
             format!("{{\"data\":{s}}}").into_bytes()
         };
 
-        let url = format!("{}/v1/{}/data/{}", self.addr, self.mount, self.secret_path);
+        let url = format!(
+            "{}/v1/{}/data/{}",
+            self.addr,
+            encode_path(&self.mount),
+            encode_path(&self.secret_path)
+        );
 
         let resp = self
             .http_client
