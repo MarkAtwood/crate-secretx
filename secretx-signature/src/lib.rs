@@ -49,13 +49,13 @@
 //! [`secretx_core`]. Callers must use compatible major versions of these
 //! crates.
 
-pub use secretx_core::SecretError;
+pub use secretx_core::{SecretError, SigningBackend};
 
 #[cfg(any(feature = "ed25519", feature = "ecdsa-p256", feature = "rsa-pss"))]
 use std::{fmt, sync::Arc};
 
 #[cfg(any(feature = "ed25519", feature = "ecdsa-p256", feature = "rsa-pss"))]
-use secretx_core::{SigningAlgorithm, SigningBackend};
+use secretx_core::SigningAlgorithm;
 
 /// Run an async signing operation synchronously.
 ///
