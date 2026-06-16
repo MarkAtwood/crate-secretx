@@ -34,7 +34,7 @@ const BACKEND: &str = "aws-sm";
 /// Backend that reads and writes secrets in AWS Secrets Manager.
 ///
 /// Construct with [`from_uri`](AwsSmBackend::from_uri). The AWS client is
-/// built eagerly at construction time using `aws_config::load_from_env`.
+/// built eagerly at construction time using `aws_config::defaults`.
 #[derive(Debug)]
 pub struct AwsSmBackend {
     client: Arc<aws_sdk_secretsmanager::Client>,
@@ -82,7 +82,7 @@ impl AwsSmBackend {
 fn build_client() -> Result<aws_sdk_secretsmanager::Client, SecretError> {
     secretx_core::run_on_new_thread(
         || async {
-            let config = aws_config::load_from_env().await;
+            let config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
             Ok(aws_sdk_secretsmanager::Client::new(&config))
         },
         BACKEND,

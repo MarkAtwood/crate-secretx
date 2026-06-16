@@ -99,7 +99,7 @@ impl AwsKmsBackend {
 
         let client = secretx_core::run_on_new_thread(
             || async {
-                let config = aws_config::load_from_env().await;
+                let config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
                 Ok(aws_sdk_kms::Client::new(&config))
             },
             "aws-kms",

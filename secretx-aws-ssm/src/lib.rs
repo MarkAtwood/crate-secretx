@@ -52,7 +52,7 @@ pub struct AwsSsmBackend {
 fn build_ssm_client() -> Result<aws_sdk_ssm::Client, SecretError> {
     secretx_core::run_on_new_thread(
         || async {
-            let cfg = aws_config::load_from_env().await;
+            let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
             Ok(aws_sdk_ssm::Client::new(&cfg))
         },
         BACKEND,
