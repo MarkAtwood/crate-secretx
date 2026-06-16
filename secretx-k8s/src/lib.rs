@@ -208,13 +208,8 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             // other keys in the Secret.  We use merge patch (not SSA) here because
             // per-key writes do not require field-ownership tracking.
             // On 404 (Secret does not exist yet), fall through to create.
-            //
-            // Note: data.clone() is necessary because K8sSecret takes ownership of
-            // the map, but we need data again if the patch returns 404 and we must
-            // fall through to the create path.  Both copies are non-Zeroizing (see
-            // ZEROIZATION GAP above).
             let patch_secret = K8sSecret {
-                data: Some(data.clone()),
+                data: Some(data),
                 ..Default::default()
             };
             match api
@@ -227,7 +222,10 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             {
                 Ok(_) => return Ok(()),
                 Err(kube::Error::Api(ref s)) if s.is_not_found() => {
-                    // Secret doesn't exist — fall through to create
+                    // Secret doesn't exist — fall through to create.
+                    // Rebuild data from the original bytes (avoids clone above).
+                    data = BTreeMap::new();
+                    data.insert(key_name.to_owned(), ByteString(bytes.to_vec()));
                 }
                 Err(e) => return Err(map_kube_error(e)),
             }
@@ -241,7 +239,7 @@ impl secretx_core::WritableSecretStore for K8sBackend {
             // create-or-update that does not require knowing the current
             // resourceVersion, making it safe to call from multiple replicas.
             let apply_secret = K8sSecret {
-                data: Some(data.clone()),
+                data: Some(data),
                 ..Default::default()
             };
             match api
@@ -257,6 +255,8 @@ impl secretx_core::WritableSecretStore for K8sBackend {
                     // SSA is supposed to create-or-update; a 404 here would mean
                     // the API group itself is unavailable rather than the resource
                     // being absent.  Fall through to an explicit POST as a last resort.
+                    data = BTreeMap::new();
+                    data.insert(key_name.to_owned(), ByteString(bytes.to_vec()));
                 }
                 Err(e) => return Err(map_kube_error(e)),
             }
