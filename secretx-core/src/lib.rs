@@ -197,14 +197,14 @@ fn json_extract_string_field(bytes: &[u8], field: &str) -> Result<SecretValue, S
         json_expect(&mut chars, ':')?;
         json_skip_ws(&mut chars);
 
-        if key == field {
+        if *key == *field {
             if chars.peek() != Some(&'"') {
                 return Err(SecretError::DecodeFailed(format!(
                     "field `{field}` is not a string"
                 )));
             }
             chars.next(); // consume opening '"'
-            let value = json_parse_string(&mut chars)?;
+            let mut value = json_parse_string(&mut chars)?;
             // Validate post-value structure.  Without this check, trailing
             // garbage immediately after the target field's value is silently
             // ignored, but the same garbage positioned before the target field
@@ -223,7 +223,11 @@ fn json_extract_string_field(bytes: &[u8], field: &str) -> Result<SecretValue, S
                     ));
                 }
             }
-            return Ok(SecretValue::new(value.into_bytes()));
+            // Move the String out of Zeroizing via mem::take (replaces
+            // with empty String which is a no-op to zeroize on drop).
+            // String::into_bytes() is zero-copy — same heap allocation.
+            let s = std::mem::take(&mut *value);
+            return Ok(SecretValue::new(s.into_bytes()));
         }
 
         // Skip the value for a non-matching key.
@@ -282,9 +286,16 @@ fn json_expect(chars: &mut Peekable<Chars<'_>>, expected: char) -> Result<(), Se
 }
 
 /// Parse a JSON string after the opening `"` has been consumed.
-/// Allocates only the returned `String`; no other heap buffers are created.
-fn json_parse_string(chars: &mut Peekable<Chars<'_>>) -> Result<String, SecretError> {
-    let mut result = String::new();
+///
+/// Returns [`Zeroizing<String>`] so that intermediate heap buffers are zeroed
+/// on drop — preventing secret fragments from leaking through `String`
+/// reallocations.  Pre-sized to `remaining` (the number of chars left in the
+/// iterator's underlying slice) to minimize reallocations.
+fn json_parse_string(chars: &mut Peekable<Chars<'_>>) -> Result<Zeroizing<String>, SecretError> {
+    // size_hint().0 is a lower bound on remaining chars — use it to pre-size
+    // the buffer and minimize reallocation-induced secret copies.
+    let hint = chars.size_hint().0;
+    let mut result = Zeroizing::new(String::with_capacity(hint));
     loop {
         match chars.next() {
             None => return Err(SecretError::DecodeFailed("unterminated JSON string".into())),
