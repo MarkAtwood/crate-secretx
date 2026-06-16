@@ -160,8 +160,8 @@ implement only `SecretStore`.
 private key never leaves the hardware.
 
 **`SecretError`** — `#[non_exhaustive]` enum: `NotFound`, `Backend`, `InvalidUri`,
-`DecodeFailed`, `Unavailable`, `DataLost`. Unavailability is always a hard error — no silent
-fallback to empty string or default value.
+`DecodeFailed`, `Unavailable`, `DataLost`, `AlgorithmMismatch`. Unavailability is always a hard
+error — no silent fallback to empty string or default value.
 
 ---
 

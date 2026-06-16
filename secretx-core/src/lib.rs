@@ -1072,6 +1072,16 @@ pub enum SecretError {
         backend: &'static str,
         message: String,
     },
+
+    /// The backend's key algorithm does not match what the caller expected.
+    ///
+    /// Returned by adapter layers (e.g. `secretx-signature`) when a
+    /// `SigningBackend` is wrapped in a typed signer for a different algorithm.
+    #[error("algorithm mismatch: expected {expected}, got {actual}")]
+    AlgorithmMismatch {
+        expected: &'static str,
+        actual: String,
+    },
 }
 
 // ── SecretUri helpers ─────────────────────────────────────────────────────────
@@ -1386,6 +1396,16 @@ pub enum SigningAlgorithm {
 #[async_trait::async_trait]
 pub trait SigningBackend: Send + Sync {
     /// Sign `message` using the backend key. Returns raw signature bytes.
+    ///
+    /// # Byte format
+    ///
+    /// All backends normalize to a fixed format per algorithm:
+    ///
+    /// - **Ed25519**: 64 bytes (R ‖ s).
+    /// - **ECDSA P-256**: 64 bytes (r ‖ s), each scalar big-endian, zero-padded
+    ///   to 32 bytes. DER-encoded backends (e.g. AWS KMS) convert to this
+    ///   fixed-size format before returning.
+    /// - **RSA-PSS 2048**: 256 bytes (big-endian signature value).
     async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SecretError>;
 
     /// Return the public key as DER-encoded SubjectPublicKeyInfo.
