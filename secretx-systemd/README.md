@@ -29,8 +29,8 @@ systemd-creds encrypt --with-key=tpm2 secret.txt /etc/credentials/db-password.cr
 
 ```toml
 [dependencies]
-secretx-systemd = "0.3"
-secretx-core = "0.3"
+secretx-systemd = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

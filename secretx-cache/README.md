@@ -8,9 +8,9 @@ TTL-based in-memory cache wrapping any `SecretStore` — part of the [secretx](h
 
 ```toml
 [dependencies]
-secretx-cache = "0.2"
-secretx-aws-sm = "0.2"  # or any other backend
-secretx-core = "0.2"
+secretx-cache = "0.4"
+secretx-aws-sm = "0.4"  # or any other backend
+secretx-core = "0.4"
 ```
 
 ```rust

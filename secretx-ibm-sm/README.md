@@ -33,8 +33,8 @@ endpoint today.
 
 ```toml
 [dependencies]
-secretx-ibm-sm = "0.3"
-secretx-core = "0.3"
+secretx-ibm-sm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

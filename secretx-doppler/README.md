@@ -18,8 +18,8 @@ Requires `DOPPLER_TOKEN` to be set in the environment at construction time.
 
 ```toml
 [dependencies]
-secretx-doppler = "0.2"
-secretx-core = "0.2"
+secretx-doppler = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust
@@ -29,6 +29,10 @@ use secretx_core::SecretStore;
 let store = DopplerBackend::from_uri("secretx:doppler:myproject/prd/DB_PASSWORD")?;
 let value = store.get().await?;
 ```
+
+## WritableSecretStore
+
+`put()` is supported via `WritableSecretStore`. It writes the secret value back to Doppler using the Secrets API.
 
 ## Part of secretx
 

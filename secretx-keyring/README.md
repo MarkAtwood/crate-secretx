@@ -21,8 +21,8 @@ Linux only. Requires kernel keyutils support (standard on all modern Linux distr
 
 ```toml
 [dependencies]
-secretx-keyring = "0.3"
-secretx-core = "0.3"
+secretx-keyring = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust
@@ -38,7 +38,7 @@ let value = store.get().await?;
 - Secrets are stored in kernel memory — never written to disk as plaintext.
 - Access is controlled by the kernel's UID-based keyring permissions.
 - The persistent keyring survives reboots but expires after a configurable window (default: a few days).
-- For encrypted-at-rest storage, consider `secretx-systemd-creds` (TPM2-encrypted, tmpfs-backed) or a cloud backend.
+- For encrypted-at-rest storage, consider `secretx-systemd` (TPM2-encrypted, tmpfs-backed) or a cloud backend.
 
 ## Part of secretx
 

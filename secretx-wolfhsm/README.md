@@ -9,7 +9,7 @@ wolfHSM C library. `SigningBackend` is declared but returns `Unavailable` until
 ## URI
 
 ```text
-secretx:wolfhsm:<label>[?server=<addr>][?client_id=<n>]
+secretx:wolfhsm:<label>[?server=<addr>&client_id=<n>]
 ```
 
 - `label` — NVM object label (1–24 bytes, UTF-8)
@@ -29,8 +29,8 @@ connection). `WOLFHSM_SERVER` is validated at first use.
 
 ```toml
 [dependencies]
-secretx-wolfhsm = "0.3"
-secretx-core = "0.3"
+secretx-wolfhsm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust
@@ -59,7 +59,7 @@ object before adding the new one. If the add fails after the delete,
 
 ```toml
 [dependencies]
-secretx = { version = "0.3", features = ["wolfhsm"] }
+secretx = { version = "0.4", features = ["wolfhsm"] }
 ```
 
 ```rust

@@ -23,8 +23,8 @@ secretx:scaleway-sm:<project-id>/<secret-name>[?field=<json_field>&revision=<n>&
 
 ```toml
 [dependencies]
-secretx-scaleway-sm = "0.3"
-secretx-core = "0.3"
+secretx-scaleway-sm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

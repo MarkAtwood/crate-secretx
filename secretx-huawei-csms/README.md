@@ -37,8 +37,8 @@ not available on this backend.
 
 ```toml
 [dependencies]
-secretx-huawei-csms = "0.3"
-secretx-core = "0.3"
+secretx-huawei-csms = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

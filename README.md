@@ -4,7 +4,7 @@ Backend-agnostic secrets retrieval for Rust services and daemons. One trait, man
 
 ```toml
 [dependencies]
-secretx = { version = "0.3", features = ["aws-sm", "file"] }
+secretx = { version = "0.4", features = ["aws-sm", "file"] }
 ```
 
 ---
@@ -38,7 +38,7 @@ choice for desktop apps that need the OS keychain.
 
 - **Not a secrets manager.** Does not store, encrypt, or audit secrets — that is the backend's job.
 - **Not a key management system.** Does not generate keys or rotate credentials autonomously.
-  Exception: the HSM backends (`aws-kms`, `azure-kv`, `pkcs11`) expose `SigningBackend`
+  Exception: the HSM backends (`aws-kms`, `pkcs11`) expose `SigningBackend`
   for keys that must never leave the hardware.
 - **Not a configuration loader.** Loads secrets (sensitive values that must be zeroed on drop),
   not config (non-sensitive structured data). Use `config-rs` or `figment` for the rest.
@@ -64,8 +64,7 @@ secretx:<backend>:<path>[?options]
 | `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager | |
 | `secretx:aws-sm:prod/my-secret?field=password` | AWS Secrets Manager | extract one JSON field |
 | `secretx:aws-ssm:prod/my-param` | AWS SSM Parameter Store | `SecureString` decrypted automatically |
-| `secretx:aws-ssm:prod/my-param?version=3` | AWS SSM Parameter Store | specific version |
-| `secretx:azure-kv:myvault/mysecret` | Azure Key Vault | also `SigningBackend` for HSM vaults |
+| `secretx:azure-kv:myvault/mysecret` | Azure Key Vault | |
 | `secretx:bitwarden:myproject/MY_SECRET` | Bitwarden Secrets Manager | auth via `BWS_ACCESS_TOKEN` |
 | `secretx:doppler:myproject/prd/MY_SECRET` | Doppler | auth via `DOPPLER_TOKEN` |
 | `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
@@ -73,9 +72,10 @@ secretx:<backend>:<path>[?options]
 | `secretx:desktop:myapp/my-key` | Desktop keychain | macOS Keychain, GNOME Keyring, Windows Credential Manager |
 | `secretx:systemd:<name>` | systemd credentials | `$CREDENTIALS_DIRECTORY`; TPM2-encrypted at rest; requires systemd v250+ |
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
-| `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB` env var |
+| `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB`, pin from `PKCS11_PIN` |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
-| `secretx:wolfhsm:my-key` | wolfHSM secure element | transport via `?server=` or `WOLFHSM_SERVER` |
+| `secretx:wolfhsm:my-key?server=host:8080&client_id=1` | wolfHSM secure element | transport via `?server=` or `WOLFHSM_SERVER`; `client_id` 0–255 |
+| `secretx:k8s:default/my-secret` | Kubernetes Secret | `?key=` to select a single data key |
 
 The `from_uri` call constructs the backend and validates the URI syntax. It does not make any
 network call or file read. Fetch happens on first `get`.
@@ -91,12 +91,12 @@ features.
 
 ```toml
 [dependencies]
-secretx = { version = "0.3", features = ["aws-sm", "file"] }
+secretx = { version = "0.4", features = ["aws-sm", "file"] }
 ```
 
 Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
 `cache`, `desktop`, `doppler`, `env` (default), `file` (default), `gcp-sm`, `hashicorp-vault`,
-`keyring`, `local-signing`, `pkcs11`, `systemd`, `wolfhsm`.
+`k8s`, `keyring`, `local-signing`, `pkcs11`, `systemd`, `wolfhsm`.
 
 ```rust
 use secretx::{SecretStore, SecretValue};
@@ -118,7 +118,7 @@ directly. No umbrella, no feature flags, no compile guards in your dependency tr
 
 ```toml
 [dependencies]
-secretx-aws-sm = "0.3"
+secretx-aws-sm = "0.4"
 ```
 
 ```rust
@@ -131,7 +131,7 @@ let key = store.get().await?;
 
 ### Signing with an HSM-resident key
 
-For keys that must never leave the hardware (AWS KMS, Azure Key Vault HSM, PKCS#11, wolfHSM),
+For keys that must never leave the hardware (AWS KMS, PKCS#11, wolfHSM),
 use `SigningBackend`. Call sites are identical regardless of which HSM is underneath.
 
 ```rust
@@ -153,8 +153,8 @@ let pubkey_der = backend.public_key_der().await?;
 **`SecretStore`** — the main trait: `get` and `refresh`. All backends implement this.
 
 **`WritableSecretStore`** — subtrait that adds `put`. Implemented by backends that support
-writes (file, keyring, cloud stores). Read-only backends (`env`, `bitwarden`) implement only
-`SecretStore`.
+writes (file, keyring, doppler, cloud stores). Read-only backends (`env`, `bitwarden`) implement
+only `SecretStore`.
 
 **`SigningBackend`** — for HSM-resident keys: `sign`, `public_key_der`, `algorithm`. The
 private key never leaves the hardware.
@@ -185,6 +185,7 @@ dispatch functions. Backend crates have no compile-time feature guards.
 | `secretx-doppler` | Doppler backend |
 | `secretx-gcp-sm` | GCP Secret Manager backend |
 | `secretx-hashicorp-vault` | HashiCorp Vault backend |
+| `secretx-k8s` | Kubernetes Secret backend |
 | `secretx-keyring` | Linux kernel keyring backend |
 | `secretx-desktop` | Desktop keychain backend (macOS Keychain, GNOME Keyring, Windows Credential Manager) |
 | `secretx-systemd` | systemd credentials backend (`$CREDENTIALS_DIRECTORY`) |
@@ -206,7 +207,7 @@ README in its crate directory. Contributions welcome; see the roadmap issues in 
 | `secretx-barbican` | `secretx:barbican:<secret-uuid>` | OpenStack Barbican; covers OVHcloud, Open Telekom Cloud, Cleura, STACKIT, VK Cloud, and any OpenStack operator |
 | `secretx-huawei-csms` | `secretx:huawei-csms:<region>/<secret-name>` | Huawei Cloud CSMS (DEW umbrella); OSCCA SM4 available for China-region deployments |
 | `secretx-ibm-sm` | `secretx:ibm-sm:<region>/<instance-id>/<secret-id>` | IBM Cloud Secrets Manager (Vault Enterprise under the hood); for IBM HPCS HSM use `secretx-pkcs11` |
-| `secretx-k8s` | `secretx:k8s:<namespace>/<secret-name>` | Kubernetes Secret object; reads whatever ESO or Secrets Store CSI Driver materialized |
+
 | `secretx-oci-vault` | `secretx:oci-vault:<compartment-id>/<secret-name>` | OCI Vault; also `SigningBackend` for HSM-backed keys |
 | `secretx-scaleway-sm` | `secretx:scaleway-sm:<project-id>/<secret-name>` | Scaleway Secret Manager |
 | `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
@@ -269,6 +270,7 @@ All backends are implemented. Integration test coverage as of 2026-04-28:
 | `gcp-sm` | ✅ real GCP | tested against GCP Secret Manager; get/put/refresh + CRC32C integrity |
 | `doppler` | ⚠️ unit tests only | needs Doppler account + service token |
 | `bitwarden` | ⚠️ unit tests only | needs Bitwarden Secrets Manager account |
+| `k8s` | ⚠️ unit tests only | needs Kubernetes cluster with accessible Secrets |
 | `keyring` | ✅ kernel keyring headless | Linux only; kernel persistent keyring, no daemon required |
 | `desktop` | ⚠️ unit tests only | needs desktop session; macOS/Windows not yet tested |
 | `systemd` | ⚠️ unit tests only | needs systemd v250+ service environment |

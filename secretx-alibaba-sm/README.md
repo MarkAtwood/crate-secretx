@@ -29,8 +29,8 @@ is an OSCCA standard, not FIPS. FIPS 140 certification is not available on this 
 
 ```toml
 [dependencies]
-secretx-alibaba-sm = "0.3"
-secretx-core = "0.3"
+secretx-alibaba-sm = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust

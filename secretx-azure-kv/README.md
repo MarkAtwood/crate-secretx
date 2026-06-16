@@ -22,8 +22,8 @@ Credential modes:
 
 ```toml
 [dependencies]
-secretx-azure-kv = "0.2"
-secretx-core = "0.2"
+secretx-azure-kv = "0.4"
+secretx-core = "0.4"
 ```
 
 ```rust
@@ -37,3 +37,5 @@ let value = store.get().await?;
 ## Part of secretx
 
 This crate is part of the [secretx](https://crates.io/crates/secretx) workspace. Enable the `azure-kv` feature on the `secretx` umbrella crate to use it via URI dispatch.
+
+`SigningBackend` is not implemented by this crate.
