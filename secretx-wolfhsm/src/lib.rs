@@ -182,10 +182,37 @@ impl WolfHsmBackend {
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
-fn backend_err(e: wolfhsm::Error) -> SecretError {
-    SecretError::Backend {
-        backend: BACKEND,
-        source: Box::new(e),
+/// Transient WH_ERROR_* codes where a retry may succeed.
+const TRANSIENT_WH_CODES: &[i32] = &[
+    -2001, // WH_ERROR_NOTREADY
+    -2002, // WH_ERROR_ABORTED
+    -2010, // WH_ERROR_TIMEOUT
+    -2011, // WH_ERROR_REQUEST_PENDING
+    -2100, // WH_ERROR_LOCKED
+    -2209, // WH_SHE_ERC_BUSY
+];
+
+/// Classify a wolfhsm error as transient ([`SecretError::Unavailable`]) or
+/// permanent ([`SecretError::Backend`]).
+///
+/// `Error::Ffi` (transport-level wolfSSL/wolfCrypt failures) is always
+/// transient — the server may still be healthy behind a flaky link.
+fn classify_err(e: wolfhsm::Error) -> SecretError {
+    match e {
+        wolfhsm::Error::Ffi { .. } => SecretError::Unavailable {
+            backend: BACKEND,
+            source: Box::new(e),
+        },
+        wolfhsm::Error::Wh { code } if TRANSIENT_WH_CODES.contains(&code) => {
+            SecretError::Unavailable {
+                backend: BACKEND,
+                source: Box::new(e),
+            }
+        }
+        _ => SecretError::Backend {
+            backend: BACKEND,
+            source: Box::new(e),
+        },
     }
 }
 
@@ -357,7 +384,7 @@ fn find_by_label(
     client: &mut Client,
     label: &str,
 ) -> Result<(Option<NvmId>, Vec<NvmId>), SecretError> {
-    let ids = client.nvm_list().map_err(backend_err)?;
+    let ids = client.nvm_list().map_err(classify_err)?;
     let mut found = None;
     for &id in &ids {
         match client.nvm_metadata(id) {
@@ -368,7 +395,7 @@ fn find_by_label(
                 }
             }
             Err(wolfhsm::Error::Wh { code }) if code == WH_ERROR_NOTFOUND => continue,
-            Err(e) => return Err(backend_err(e)),
+            Err(e) => return Err(classify_err(e)),
         }
     }
     Ok((found, ids))
@@ -430,7 +457,7 @@ fn find_cached_or_scan(state: &mut WolfHsmState, label: &str) -> Result<FindResu
             match state.connected_client().nvm_metadata(cached) {
                 Ok(meta) => meta.label_str() == Some(label),
                 Err(wolfhsm::Error::Wh { code }) if code == WH_ERROR_NOTFOUND => false,
-                Err(e) => return Err(backend_err(e)),
+                Err(e) => return Err(classify_err(e)),
             }
         };
         if still_valid {
@@ -482,7 +509,7 @@ impl SecretStore for WolfHsmBackend {
             let bytes = guard
                 .connected_client()
                 .nvm_read(id, 0)
-                .map_err(backend_err)?;
+                .map_err(classify_err)?;
             Ok(SecretValue::new(bytes))
         })
         .await
@@ -505,7 +532,7 @@ impl SecretStore for WolfHsmBackend {
             let bytes = guard
                 .connected_client()
                 .nvm_read(id, 0)
-                .map_err(backend_err)?;
+                .map_err(classify_err)?;
             Ok(SecretValue::new(bytes))
         })
         .await
@@ -544,7 +571,7 @@ impl WritableSecretStore for WolfHsmBackend {
                                      the replacement write failed; original data is gone"
                                 ),
                             },
-                            other => backend_err(other),
+                            other => classify_err(other),
                         })?;
                     // find_cached_or_scan already set cached_nvm_id = Some(id);
                     // this write is defensive — makes the cache invariant visible
@@ -564,7 +591,7 @@ impl WritableSecretStore for WolfHsmBackend {
                     guard
                         .connected_client()
                         .nvm_add(free_id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
-                        .map_err(backend_err)?;
+                        .map_err(classify_err)?;
                     guard.cached_nvm_id = Some(free_id);
                 }
             }
