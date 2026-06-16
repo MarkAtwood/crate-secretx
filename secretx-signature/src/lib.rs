@@ -35,10 +35,13 @@
 //!
 //! # Async bridging
 //!
-//! Each `try_sign` call runs the underlying async `SigningBackend::sign` on a
-//! scoped thread with a current-thread tokio runtime. This is safe from any
-//! calling context (sync, async, nested runtimes). The thread-creation overhead
-//! is negligible compared to the cost of an HSM or KMS signing operation.
+//! Each `try_sign` call bridges the underlying async `SigningBackend::sign`
+//! into a synchronous context. If called outside a tokio runtime, a
+//! current-thread runtime is created on the calling thread. If called inside
+//! an existing tokio runtime, a scoped thread is spawned with its own runtime
+//! to avoid a nested `block_on` panic. Both paths are safe from any calling
+//! context (sync, async, nested runtimes). The overhead is negligible compared
+//! to the cost of an HSM or KMS signing operation.
 //!
 //! # Dependency versions
 //!
@@ -56,9 +59,9 @@ use secretx_core::{SigningAlgorithm, SigningBackend};
 
 /// Run an async signing operation synchronously.
 ///
-/// If called outside a tokio runtime, creates a current-thread runtime on the
-/// current thread. If called inside a tokio runtime, spawns a scoped thread
-/// with its own runtime to avoid a nested `block_on` panic.
+/// If no tokio runtime is active, creates a current-thread runtime on the
+/// calling thread. If a tokio runtime is already active, spawns a scoped
+/// thread with its own runtime to avoid a nested `block_on` panic.
 #[cfg(any(feature = "ed25519", feature = "ecdsa-p256", feature = "rsa-pss"))]
 fn sign_sync(backend: &Arc<dyn SigningBackend>, msg: &[u8]) -> Result<Vec<u8>, SecretError> {
     if tokio::runtime::Handle::try_current().is_err() {
@@ -139,7 +142,7 @@ impl Ed25519Signer {
 impl signature::Signer<ed25519::Signature> for Ed25519Signer {
     /// Sign `msg` synchronously by bridging to the async `SigningBackend`.
     ///
-    /// Each call creates a scoped thread with a current-thread tokio runtime.
+    /// See [Async bridging](crate#async-bridging) for threading details.
     ///
     /// # Panics
     ///
@@ -198,7 +201,7 @@ impl EcdsaP256Signer {
 impl signature::Signer<p256::ecdsa::Signature> for EcdsaP256Signer {
     /// Sign `msg` synchronously by bridging to the async `SigningBackend`.
     ///
-    /// Each call creates a scoped thread with a current-thread tokio runtime.
+    /// See [Async bridging](crate#async-bridging) for threading details.
     ///
     /// # Panics
     ///
@@ -264,7 +267,7 @@ impl RsaPssSigner {
 impl signature::Signer<rsa::pss::Signature> for RsaPssSigner {
     /// Sign `msg` synchronously by bridging to the async `SigningBackend`.
     ///
-    /// Each call creates a scoped thread with a current-thread tokio runtime.
+    /// See [Async bridging](crate#async-bridging) for threading details.
     /// Validates that the backend returns exactly 256 bytes (RSA-2048).
     ///
     /// # Panics
