@@ -364,7 +364,11 @@ fn pkcs11_detect_algorithm(
             } else {
                 return Err(SecretError::Backend {
                     backend: BACKEND,
-                    source: format!("unsupported key type: {kt}").into(),
+                    source: format!(
+                        "unsupported key type: {kt}; \
+                         this backend supports only EC P-256 and RSA-2048"
+                    )
+                    .into(),
                 });
             }
         }
