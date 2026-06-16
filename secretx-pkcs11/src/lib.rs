@@ -113,6 +113,12 @@ impl Pkcs11Backend {
     /// given library path; subsequent calls reuse the existing context
     /// (PKCS#11 spec requires exactly one `C_Initialize` per process per
     /// library).  No session is opened until a trait method is called.
+    ///
+    /// **Blocking**: the first call for a given library path performs `dlopen`,
+    /// `C_Initialize`, and slot enumeration — synchronous operations that may
+    /// take hundreds of milliseconds for network-backed HSMs (CloudHSM,
+    /// GCP KMS PKCS#11).  Wrap the first call in
+    /// [`tokio::task::spawn_blocking`] if calling from an async context.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != "pkcs11" {
