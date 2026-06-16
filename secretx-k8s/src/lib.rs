@@ -117,11 +117,11 @@ impl secretx_core::SecretStore for K8sBackend {
         let secret = api.get_opt(&self.name).await.map_err(map_kube_error)?;
 
         let secret = secret.ok_or(SecretError::NotFound)?;
-        let data = secret.data.ok_or(SecretError::NotFound)?;
+        let mut data = secret.data.ok_or(SecretError::NotFound)?;
 
         if let Some(k) = &self.key {
-            let bs = data.get(k.as_str()).ok_or(SecretError::NotFound)?;
-            Ok(secretx_core::SecretValue::new(bs.0.clone()))
+            let bs = data.remove(k.as_str()).ok_or(SecretError::NotFound)?;
+            Ok(secretx_core::SecretValue::new(bs.0))
         } else {
             match data.len() {
                 0 => Err(SecretError::NotFound),
