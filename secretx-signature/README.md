@@ -31,4 +31,4 @@ let sig: ed25519::Signature = signer.try_sign(b"hello")?;
 
 ## Part of secretx
 
-This crate is part of the [secretx](https://crates.io/crates/secretx) workspace.
+This crate is part of the [secretx](https://crates.io/crates/secretx) workspace. Unlike backend crates (`secretx-aws-kms`, `secretx-file`, etc.), it is not included in the `secretx` umbrella crate — add it as a direct dependency. The umbrella handles backend dispatch via `from_signing_uri()`; this crate is a downstream consumer that wraps the resulting backend for use with the RustCrypto `signature` ecosystem.

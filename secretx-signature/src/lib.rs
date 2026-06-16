@@ -43,6 +43,13 @@
 //! context (sync, async, nested runtimes). The overhead is negligible compared
 //! to the cost of an HSM or KMS signing operation.
 //!
+//! # Relationship to the umbrella crate
+//!
+//! This crate is **not** part of the [`secretx`] umbrella — add it as a direct
+//! dependency. The umbrella handles backend dispatch; this crate is a downstream
+//! consumer that wraps the resulting [`SigningBackend`] for the RustCrypto
+//! [`signature`] ecosystem.
+//!
 //! # Dependency versions
 //!
 //! This crate's public API exposes types from [`signature`] v2 and
