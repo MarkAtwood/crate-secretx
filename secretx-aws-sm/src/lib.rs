@@ -267,6 +267,19 @@ inventory::submit!(secretx_core::BackendRegistration {
 inventory::submit!(secretx_core::WritableBackendRegistration {
     name: "aws-sm",
     factory: |uri: &str| {
+        // Reject ?field= at construction time: put() cannot write a single
+        // JSON field without a read-modify-write race.  Fail early rather than
+        // returning InvalidUri from put() at rotation time.
+        if secretx_core::SecretUri::parse(uri)?
+            .param("field")
+            .is_some()
+        {
+            return Err(secretx_core::SecretError::InvalidUri(
+                "aws-sm writable backend does not support ?field=; \
+                 put() requires the full secret URI without a field selector"
+                    .into(),
+            ));
+        }
         AwsSmBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })

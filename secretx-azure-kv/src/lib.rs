@@ -383,6 +383,19 @@ inventory::submit!(secretx_core::BackendRegistration {
 inventory::submit!(secretx_core::WritableBackendRegistration {
     name: "azure-kv",
     factory: |uri: &str| {
+        // Reject ?field= at construction time: put() cannot write a single
+        // JSON field without a read-modify-write race.  Fail early rather than
+        // returning InvalidUri from put() at rotation time.
+        if secretx_core::SecretUri::parse(uri)?
+            .param("field")
+            .is_some()
+        {
+            return Err(secretx_core::SecretError::InvalidUri(
+                "azure-kv writable backend does not support ?field=; \
+                 put() requires the full secret URI without a field selector"
+                    .into(),
+            ));
+        }
         AzureKvBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
