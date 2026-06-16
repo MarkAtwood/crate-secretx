@@ -4,7 +4,7 @@ Backend-agnostic secrets retrieval for Rust services and daemons. One trait, man
 
 ```toml
 [dependencies]
-secretx = { version = "0.4", features = ["aws-sm", "file"] }
+secretx = { version = "0.5", features = ["aws-sm", "file"] }
 ```
 
 ---
@@ -91,7 +91,7 @@ features.
 
 ```toml
 [dependencies]
-secretx = { version = "0.4", features = ["aws-sm", "file"] }
+secretx = { version = "0.5", features = ["aws-sm", "file"] }
 ```
 
 Feature flags match backend names: `aws-kms`, `aws-sm`, `aws-ssm`, `azure-kv`, `bitwarden`,
@@ -118,7 +118,7 @@ directly. No umbrella, no feature flags, no compile guards in your dependency tr
 
 ```toml
 [dependencies]
-secretx-aws-sm = "0.4"
+secretx-aws-sm = "0.5"
 ```
 
 ```rust
@@ -153,23 +153,24 @@ let pubkey_der = backend.public_key_der().await?;
 **`SecretStore`** — the main trait: `get` and `refresh`. All backends implement this.
 
 **`WritableSecretStore`** — subtrait that adds `put`. Implemented by backends that support
-writes (file, keyring, doppler, cloud stores). Read-only backends (`env`, `bitwarden`) implement
-only `SecretStore`.
+writes (file, keyring, doppler, cloud stores). Read-only backends (`env`, `bitwarden`, `systemd`)
+implement only `SecretStore`.
 
 **`SigningBackend`** — for HSM-resident keys: `sign`, `public_key_der`, `algorithm`. The
 private key never leaves the hardware.
 
 **`SecretError`** — `#[non_exhaustive]` enum: `NotFound`, `Backend`, `InvalidUri`,
-`DecodeFailed`, `Unavailable`. Unavailability is always a hard error — no silent fallback to
-empty string or default value.
+`DecodeFailed`, `Unavailable`, `DataLost`. Unavailability is always a hard error — no silent
+fallback to empty string or default value.
 
 ---
 
 ## Crate structure
 
 The library is a Cargo workspace. Each backend is its own crate with no compile-time feature
-guards. All `#[cfg(feature)]` guards are confined to the `secretx` umbrella crate's three
-dispatch functions. Backend crates have no compile-time feature guards.
+guards. All `#[cfg(feature)]` guards are confined to the `secretx` umbrella crate's crate-level
+imports; the dispatch functions themselves use `inventory` and contain no feature guards.
+Backend crates have no compile-time feature guards.
 
 | Crate | Contents |
 |-------|----------|
@@ -207,7 +208,6 @@ README in its crate directory. Contributions welcome; see the roadmap issues in 
 | `secretx-barbican` | `secretx:barbican:<secret-uuid>` | OpenStack Barbican; covers OVHcloud, Open Telekom Cloud, Cleura, STACKIT, VK Cloud, and any OpenStack operator |
 | `secretx-huawei-csms` | `secretx:huawei-csms:<region>/<secret-name>` | Huawei Cloud CSMS (DEW umbrella); OSCCA SM4 available for China-region deployments |
 | `secretx-ibm-sm` | `secretx:ibm-sm:<region>/<instance-id>/<secret-id>` | IBM Cloud Secrets Manager (Vault Enterprise under the hood); for IBM HPCS HSM use `secretx-pkcs11` |
-
 | `secretx-oci-vault` | `secretx:oci-vault:<compartment-id>/<secret-name>` | OCI Vault; also `SigningBackend` for HSM-backed keys |
 | `secretx-scaleway-sm` | `secretx:scaleway-sm:<project-id>/<secret-name>` | Scaleway Secret Manager |
 | `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
