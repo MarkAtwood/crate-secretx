@@ -1417,6 +1417,18 @@ pub trait SigningBackend: Send + Sync {
 /// # Errors
 ///
 /// Returns `Err(SecretError::Backend)` if the tokio runtime cannot be built or
+/// Extract a human-readable message from a panic payload.
+#[cfg(feature = "blocking")]
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "thread panicked (no message)".to_string()
+    }
+}
+
 /// if the spawned thread panics.  The `backend` argument is included in the
 /// error for diagnostics.
 #[cfg(feature = "blocking")]
@@ -1438,10 +1450,11 @@ where
                 })
                 .and_then(|rt| rt.block_on(f()))
         });
-        result = Some(join.join().unwrap_or_else(|_| {
+        result = Some(join.join().unwrap_or_else(|panic| {
             Err(SecretError::Backend {
                 backend,
-                source: "client init thread panicked".into(),
+                source: format!("client init thread panicked: {}", panic_message(&panic))
+                    .into(),
             })
         }));
     });
@@ -1506,10 +1519,14 @@ pub fn get_blocking<S: SecretStore + ?Sized>(store: &S) -> Result<SecretValue, S
                         })?
                         .block_on(store.get())
                 });
-                result = Some(join.join().unwrap_or_else(|_| {
+                result = Some(join.join().unwrap_or_else(|panic| {
                     Err(SecretError::Backend {
                         backend: "blocking",
-                        source: "get_blocking thread panicked".into(),
+                        source: format!(
+                            "get_blocking thread panicked: {}",
+                            panic_message(&panic)
+                        )
+                        .into(),
                     })
                 }));
             });
