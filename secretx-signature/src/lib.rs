@@ -45,7 +45,7 @@
 //!
 //! # Relationship to the umbrella crate
 //!
-//! This crate is **not** part of the [`secretx`] umbrella — add it as a direct
+//! This crate is **not** part of the `secretx` umbrella — add it as a direct
 //! dependency. The umbrella handles backend dispatch; this crate is a downstream
 //! consumer that wraps the resulting [`SigningBackend`] for the RustCrypto
 //! [`signature`] ecosystem.

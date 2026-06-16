@@ -32,3 +32,6 @@ default = []
 ed25519 = ["dep:ed25519"]
 ecdsa-p256 = ["dep:p256"]
 rsa-pss = ["dep:rsa"]
+
+[package.metadata.docs.rs]
+all-features = true
