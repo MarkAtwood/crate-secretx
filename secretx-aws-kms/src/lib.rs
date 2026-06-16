@@ -58,6 +58,12 @@ impl AwsKmsBackend {
     /// Builds the AWS client synchronously using a scoped thread with its own
     /// tokio runtime so that this constructor can be called from any context.
     /// No network call is made during construction.
+    ///
+    /// **Note**: the `?algorithm=` parameter is validated syntactically (must be
+    /// a recognized algorithm name) but not against the actual KMS key type.
+    /// A mismatch (e.g. `?algorithm=rsa-pss-2048` with an EC key) will succeed
+    /// at construction and fail at the first `sign()` call with an opaque KMS
+    /// `InvalidKeyUsageException`.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != "aws-kms" {
