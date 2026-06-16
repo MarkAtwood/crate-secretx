@@ -62,7 +62,6 @@ use tss_esapi::{
     interface_types::resource_handles::NvAuth,
     structures::{MaxNvBuffer, SignatureScheme},
 };
-use zeroize::Zeroizing;
 
 const BACKEND: &str = "tpm2";
 const DEFAULT_TCTI: &str = "device:/dev/tpmrm0";
@@ -96,7 +95,7 @@ impl std::fmt::Debug for Tpm2Backend {
         f.debug_struct("Tpm2Backend")
             .field("mode", &self.mode)
             .field("tcti", &self.tcti)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 
@@ -203,23 +202,39 @@ fn open_context(tcti: &str) -> Result<Context, SecretError> {
 
 /// Classify a TSS error as transient (Unavailable) or permanent (Backend).
 fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
+    use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
+
+    let is_transient = match &e {
+        tss_esapi::Error::Tss2Error(rc) => matches!(
+            rc.kind(),
+            Some(
+                Tss2ResponseCodeKind::Retry
+                    | Tss2ResponseCodeKind::Yielded
+                    | Tss2ResponseCodeKind::NvRate
+                    | Tss2ResponseCodeKind::NvUnavailable
+                    | Tss2ResponseCodeKind::Memory
+                    | Tss2ResponseCodeKind::ObjectMemory
+                    | Tss2ResponseCodeKind::SessionMemory
+                    | Tss2ResponseCodeKind::ObjectHandles
+                    | Tss2ResponseCodeKind::SessionHandles
+                    | Tss2ResponseCodeKind::Canceled
+            )
+        ),
+        // Wrapper errors (bad params, missing auth) are permanent.
+        tss_esapi::Error::WrapperError(_) => false,
+    };
+
     let msg = e.to_string();
-    let lower = msg.to_ascii_lowercase();
-    // Resource manager busy, retry, or connection errors are transient.
-    if lower.contains("retry")
-        || lower.contains("yielded")
-        || lower.contains("resource")
-        || lower.contains("tcti")
-        || lower.contains("i/o error")
-    {
-        return SecretError::Unavailable {
+    if is_transient {
+        SecretError::Unavailable {
             backend: BACKEND,
             source: msg.into(),
-        };
-    }
-    SecretError::Backend {
-        backend: BACKEND,
-        source: msg.into(),
+        }
+    } else {
+        SecretError::Backend {
+            backend: BACKEND,
+            source: msg.into(),
+        }
     }
 }
 
@@ -229,10 +244,10 @@ fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
 impl SecretStore for Tpm2Backend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let Mode::Nv { index } = self.mode else {
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "get() is only supported on NV index URIs (secretx:tpm2:nv/...)".into(),
-            });
+            return Err(SecretError::InvalidUri(
+                "get() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
+                    .into(),
+            ));
         };
 
         let tcti = self.tcti.clone();
@@ -287,10 +302,10 @@ impl SecretStore for Tpm2Backend {
 impl WritableSecretStore for Tpm2Backend {
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         let Mode::Nv { index } = self.mode else {
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "put() is only supported on NV index URIs (secretx:tpm2:nv/...)".into(),
-            });
+            return Err(SecretError::InvalidUri(
+                "put() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
+                    .into(),
+            ));
         };
 
         let tcti = self.tcti.clone();
@@ -306,9 +321,9 @@ impl WritableSecretStore for Tpm2Backend {
                 .map_err(map_tpm_error)?;
             let nv_index_handle = NvIndexHandle::from(nv_handle);
 
-            // Wrap in Zeroizing so the copy is zeroed on drop.
-            let owned = Zeroizing::new(bytes.to_vec());
-            let data = MaxNvBuffer::try_from(owned.as_slice().to_vec()).map_err(|e| {
+            // bytes is already Zeroizing<Vec<u8>>; MaxNvBuffer also wraps
+            // Zeroizing internally, so both copies are zeroed on drop.
+            let data = MaxNvBuffer::try_from(bytes.to_vec()).map_err(|e| {
                 SecretError::Backend {
                     backend: BACKEND,
                     source: format!("data too large for NV index: {e}").into(),
@@ -337,10 +352,10 @@ impl WritableSecretStore for Tpm2Backend {
 impl SigningBackend for Tpm2Backend {
     async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, algorithm } = self.mode else {
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "sign() is only supported on key URIs (secretx:tpm2:key/...)".into(),
-            });
+            return Err(SecretError::InvalidUri(
+                "sign() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
+                    .into(),
+            ));
         };
 
         let tcti = self.tcti.clone();
@@ -396,11 +411,10 @@ impl SigningBackend for Tpm2Backend {
 
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, .. } = self.mode else {
-            return Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "public_key_der() is only supported on key URIs (secretx:tpm2:key/...)"
+            return Err(SecretError::InvalidUri(
+                "public_key_der() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
                     .into(),
-            });
+            ));
         };
 
         let tcti = self.tcti.clone();
@@ -445,10 +459,10 @@ impl SigningBackend for Tpm2Backend {
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
         match self.mode {
             Mode::Sign { algorithm, .. } => Ok(algorithm),
-            Mode::Nv { .. } => Err(SecretError::Backend {
-                backend: BACKEND,
-                source: "algorithm() is only supported on key URIs (secretx:tpm2:key/...)".into(),
-            }),
+            Mode::Nv { .. } => Err(SecretError::InvalidUri(
+                "algorithm() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
+                    .into(),
+            )),
         }
     }
 }
