@@ -90,6 +90,14 @@ impl LocalSigningBackend {
     /// Reads and parses the key file eagerly. Does not retain raw key bytes
     /// after construction — they are zeroed when the local `Zeroizing` buffer
     /// is dropped.
+    ///
+    /// # Errors
+    ///
+    /// - [`SecretError::InvalidUri`] — wrong backend, empty path, `..` components,
+    ///   missing/unknown `?algorithm=`, or unknown query parameters.
+    /// - [`SecretError::NotFound`] — key file does not exist.
+    /// - [`SecretError::Backend`] — key file exists but cannot be parsed as
+    ///   PKCS#8 DER for the requested algorithm.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != BACKEND {
