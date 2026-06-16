@@ -589,4 +589,64 @@ mod tests {
         let value = store.get().await.unwrap();
         assert!(!value.as_bytes().is_empty());
     }
+
+    // ── is_not_found / is_transient unit tests ───────────────────────────────
+
+    fn make_http_error(status: u16) -> azure_core::Error {
+        azure_core::Error::with_message(
+            ErrorKind::HttpResponse {
+                status: azure_core::http::StatusCode::try_from(status).unwrap(),
+                error_code: None,
+                raw_response: None,
+            },
+            format!("test HTTP {status}"),
+        )
+    }
+
+    #[test]
+    fn is_not_found_404() {
+        assert!(is_not_found(&make_http_error(404)));
+    }
+
+    #[test]
+    fn is_not_found_200_is_false() {
+        assert!(!is_not_found(&make_http_error(200)));
+    }
+
+    #[test]
+    fn is_not_found_500_is_false() {
+        assert!(!is_not_found(&make_http_error(500)));
+    }
+
+    #[test]
+    fn is_transient_500() {
+        assert!(is_transient(&make_http_error(500)));
+    }
+
+    #[test]
+    fn is_transient_503() {
+        assert!(is_transient(&make_http_error(503)));
+    }
+
+    #[test]
+    fn is_transient_429() {
+        assert!(is_transient(&make_http_error(429)));
+    }
+
+    #[test]
+    fn is_transient_403_is_false() {
+        assert!(!is_transient(&make_http_error(403)));
+    }
+
+    #[test]
+    fn is_transient_io_error() {
+        let e = azure_core::Error::with_message(ErrorKind::Io, "network down");
+        assert!(is_transient(&e));
+    }
+
+    #[test]
+    fn is_transient_connection_error() {
+        let e = azure_core::Error::with_message(ErrorKind::Connection, "DNS failed");
+        assert!(is_transient(&e));
+    }
 }
