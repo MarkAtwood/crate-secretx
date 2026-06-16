@@ -46,6 +46,55 @@ use std::path::PathBuf;
 
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 
+/// Validate a systemd credential name per systemd's `credential_name_valid()`.
+///
+/// Mirrors `filename_is_valid() && fdname_is_valid()` from systemd source:
+/// - Must not be empty
+/// - Must not be `.` or `..`
+/// - Must not contain `/` or `:`
+/// - Must not contain bytes < 0x20 (control chars) or >= 0x7F (DEL / non-ASCII)
+/// - Must be at most 255 bytes (`NAME_MAX`)
+///
+/// Reference: systemd `src/shared/creds-util.c`, `src/basic/path-util.c`,
+/// `src/basic/fd-util.c`.
+fn credential_name_valid(name: &str) -> Result<(), SecretError> {
+    if name.is_empty() {
+        return Err(SecretError::InvalidUri(
+            "systemd URI requires a credential name: `secretx:systemd:<name>`".into(),
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err(SecretError::InvalidUri(format!(
+            "systemd credential name `{name}` is not allowed (`.` and `..` are reserved)"
+        )));
+    }
+    if name.len() > 255 {
+        return Err(SecretError::InvalidUri(format!(
+            "systemd credential name is {} bytes; maximum is 255 (NAME_MAX)",
+            name.len()
+        )));
+    }
+    for b in name.bytes() {
+        if b == b'/' {
+            return Err(SecretError::InvalidUri(
+                "systemd credential name must not contain `/`".into(),
+            ));
+        }
+        if b == b':' {
+            return Err(SecretError::InvalidUri(
+                "systemd credential name must not contain `:`".into(),
+            ));
+        }
+        if b < 0x20 || b >= 0x7F {
+            return Err(SecretError::InvalidUri(format!(
+                "systemd credential name contains invalid byte 0x{b:02X}; \
+                 only printable ASCII (0x20–0x7E) is allowed"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Backend that reads systemd service credentials from `$CREDENTIALS_DIRECTORY`.
 ///
 /// ```text
@@ -66,8 +115,8 @@ impl SystemdCredsBackend {
     ///
     /// # Errors
     ///
-    /// Returns [`SecretError::InvalidUri`] if the backend is not `systemd`,
-    /// the credential name is empty, contains `/`, or is `.`/`..` (path traversal).
+    /// Returns [`SecretError::InvalidUri`] if the backend is not `systemd`
+    /// or the credential name fails [`credential_name_valid`].
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != "systemd" {
@@ -77,16 +126,7 @@ impl SystemdCredsBackend {
             )));
         }
         let name = parsed.path();
-        if name.is_empty() {
-            return Err(SecretError::InvalidUri(
-                "systemd URI requires a credential name: `secretx:systemd:<name>`".into(),
-            ));
-        }
-        if name.contains('/') || name == "." || name == ".." {
-            return Err(SecretError::InvalidUri(
-                "systemd credential name must not contain `/` or be `.`/`..` (path traversal not allowed)".into(),
-            ));
-        }
+        credential_name_valid(name)?;
         Ok(Self {
             name: name.to_string(),
         })
@@ -194,6 +234,40 @@ mod tests {
             SystemdCredsBackend::from_uri("secretx:systemd:.."),
             Err(SecretError::InvalidUri(_))
         ));
+    }
+
+    #[test]
+    fn from_uri_colon_rejected() {
+        assert!(matches!(
+            SystemdCredsBackend::from_uri("secretx:systemd:foo:bar"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_control_char_rejected() {
+        // %01 decodes to 0x01 (control character)
+        assert!(matches!(
+            SystemdCredsBackend::from_uri("secretx:systemd:%01x"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_too_long_rejected() {
+        let long_name = "a".repeat(256);
+        let uri = format!("secretx:systemd:{long_name}");
+        assert!(matches!(
+            SystemdCredsBackend::from_uri(&uri),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_max_length_ok() {
+        let name = "a".repeat(255);
+        let uri = format!("secretx:systemd:{name}");
+        SystemdCredsBackend::from_uri(&uri).unwrap();
     }
 
     // ── Runtime behaviour ─────────────────────────────────────────────────────
