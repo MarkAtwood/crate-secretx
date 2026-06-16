@@ -655,10 +655,17 @@ inventory::submit!(secretx_core::WritableBackendRegistration::new(
 mod tests {
     use super::*;
 
+    /// Serialize tests that mutate process-global env vars.
+    /// `std::env::remove_var` / `set_var` are not thread-safe; without this
+    /// lock, parallel test threads race on `PKCS11_LIB`.
+    static ENV_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
     // ── URI parsing (no HSM required) ─────────────────────────────────────────
 
     #[test]
     fn uri_parse_with_lib_param() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Set no env var to ensure the param is the source.
         std::env::remove_var("PKCS11_LIB");
         // We can't call from_uri successfully without the library, so just test
@@ -722,6 +729,7 @@ mod tests {
 
     #[test]
     fn from_uri_missing_lib_no_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Ensure neither source of the library path is present.
         std::env::remove_var("PKCS11_LIB");
         let result = Pkcs11Backend::from_uri("secretx:pkcs11:0/my-key");
@@ -733,6 +741,7 @@ mod tests {
 
     #[test]
     fn from_uri_non_numeric_slot() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("PKCS11_LIB");
         let result = Pkcs11Backend::from_uri("secretx:pkcs11:abc/label?lib=/tmp/x.so");
         assert!(
