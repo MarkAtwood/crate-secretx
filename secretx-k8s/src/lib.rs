@@ -79,7 +79,8 @@ impl K8sBackend {
 
 fn map_kube_error(e: kube::Error) -> SecretError {
     match &e {
-        kube::Error::Api(s) if s.is_forbidden() => SecretError::Unavailable {
+        // 403 Forbidden is a permanent RBAC misconfiguration — not retriable.
+        kube::Error::Api(s) if s.is_forbidden() => SecretError::Backend {
             backend: BACKEND,
             source: Box::new(e),
         },
@@ -552,9 +553,9 @@ mod get_mock_tests {
         mock.await.unwrap();
     }
 
-    /// 403 Forbidden response: must return `Unavailable`.
+    /// 403 Forbidden response: must return `Backend` (permanent RBAC error).
     #[tokio::test]
-    async fn test_get_forbidden_is_unavailable() {
+    async fn test_get_forbidden_is_backend() {
         let (client, mut handle) = make_pair();
         let backend = make_backend("secretx:k8s:default/my-secret", client);
 
@@ -562,11 +563,11 @@ mod get_mock_tests {
         let mock = tokio::spawn(async move { respond(&mut handle, 403, resp).await });
 
         let Err(err) = secretx_core::SecretStore::get(&backend).await else {
-            panic!("expected Err(Unavailable)");
+            panic!("expected Err(Backend)");
         };
         assert!(
-            matches!(err, secretx_core::SecretError::Unavailable { .. }),
-            "expected Unavailable for 403, got: {err:?}"
+            matches!(err, secretx_core::SecretError::Backend { .. }),
+            "expected Backend for 403, got: {err:?}"
         );
         mock.await.unwrap();
     }
@@ -755,9 +756,9 @@ mod put_mock_tests {
         mock.await.unwrap();
     }
 
-    /// 403 Forbidden response to PATCH: `put()` returns `Unavailable`.
+    /// 403 Forbidden response to PATCH: `put()` returns `Backend` (permanent RBAC error).
     #[tokio::test]
-    async fn test_put_forbidden_is_unavailable() {
+    async fn test_put_forbidden_is_backend() {
         let (client, mut handle) = make_pair();
         let backend = make_backend("secretx:k8s:default/my-secret?key=password", client);
 
@@ -766,11 +767,11 @@ mod put_mock_tests {
 
         let value = secretx_core::SecretValue::new(b"hello".to_vec());
         let Err(err) = secretx_core::WritableSecretStore::put(&backend, value).await else {
-            panic!("expected Err(Unavailable)");
+            panic!("expected Err(Backend)");
         };
         assert!(
-            matches!(err, secretx_core::SecretError::Unavailable { .. }),
-            "expected Unavailable for 403, got: {err:?}"
+            matches!(err, secretx_core::SecretError::Backend { .. }),
+            "expected Backend for 403, got: {err:?}"
         );
         mock.await.unwrap();
     }
