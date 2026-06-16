@@ -160,6 +160,9 @@ impl signature::Signer<ed25519::Signature> for Ed25519Signer {
 /// Adapter wrapping a [`SigningBackend`] as a `Signer<p256::ecdsa::Signature>`.
 ///
 /// Validates at construction that the backend's algorithm is ECDSA P-256.
+/// The backend must return signatures as 64 bytes of fixed-size `r || s`
+/// (two 32-byte big-endian scalars), not DER-encoded. This is the format
+/// specified by [`SigningBackend::sign`].
 #[cfg(feature = "ecdsa-p256")]
 pub struct EcdsaP256Signer {
     backend: Arc<dyn SigningBackend>,
