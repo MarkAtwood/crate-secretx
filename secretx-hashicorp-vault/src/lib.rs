@@ -293,6 +293,14 @@ impl SecretStore for VaultBackend {
 
 #[async_trait::async_trait]
 impl WritableSecretStore for VaultBackend {
+    /// Write a secret to Vault KV v2.
+    ///
+    /// **With `?field=`**: writes a single-field data map `{field: value}`.
+    /// This **replaces the entire KV version** — other fields in the previous
+    /// version are not preserved.  Concurrent field-level puts on different
+    /// fields race and the loser's field is silently dropped.
+    ///
+    /// **Without `?field=`**: writes the full JSON object as the data map.
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         let s = std::str::from_utf8(value.as_bytes())
             .map_err(|_| SecretError::DecodeFailed("secret value is not valid UTF-8".into()))?;
