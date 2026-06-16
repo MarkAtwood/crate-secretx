@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 inventory = { workspace = true }
 keyring = { version = "3", features = ["linux-native", "crypto-rust"] }
 tokio = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

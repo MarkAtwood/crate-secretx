@@ -28,6 +28,7 @@
 //! ```
 
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
+use zeroize::Zeroizing;
 
 /// Backend that reads and writes secrets via the platform desktop keychain.
 ///
@@ -140,13 +141,16 @@ impl SecretStore for DesktopKeyringBackend {
 #[async_trait::async_trait]
 impl WritableSecretStore for DesktopKeyringBackend {
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
-        let s = std::str::from_utf8(value.as_bytes())
-            .map_err(|_| {
-                SecretError::DecodeFailed(
-                    "desktop keychain backend requires UTF-8 secret values".into(),
-                )
-            })?
-            .to_owned();
+        // Wrap in Zeroizing so the plaintext copy is zeroed when the closure returns.
+        let s = Zeroizing::new(
+            std::str::from_utf8(value.as_bytes())
+                .map_err(|_| {
+                    SecretError::DecodeFailed(
+                        "desktop keychain backend requires UTF-8 secret values".into(),
+                    )
+                })?
+                .to_owned(),
+        );
         let service = self.service.clone();
         let account = self.account.clone();
         tokio::task::spawn_blocking(move || {
