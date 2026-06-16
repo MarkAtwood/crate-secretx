@@ -63,6 +63,14 @@ pub struct LocalSigningBackend {
     algorithm: SigningAlgorithm,
 }
 
+impl std::fmt::Debug for LocalSigningBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSigningBackend")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LocalSigningBackend {
     /// Construct from a `secretx:local-signing:<path>?algorithm=<algo>` URI.
     ///

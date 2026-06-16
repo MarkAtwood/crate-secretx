@@ -84,6 +84,7 @@ fn require_persistent_keyring() -> Result<(), SecretError> {
 ///
 /// `get` and `refresh` retrieve the stored password string.
 /// `put` writes a new password string; the value must be valid UTF-8.
+#[derive(Debug)]
 pub struct KeyringBackend {
     service: String,
     account: String,
