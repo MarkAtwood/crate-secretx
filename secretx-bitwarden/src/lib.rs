@@ -237,7 +237,8 @@ fn classify_bitwarden_sdk_error(e: impl std::error::Error + Send + Sync + 'stati
         || msg.contains("connection reset")
         || msg.contains("timed out")
         || msg.contains("dns error")
-        || msg.contains("No such host");
+        || msg.contains("No such host")
+        || msg.contains("Name or service not known");
     if transient_response || transient_network {
         SecretError::Unavailable {
             backend: BACKEND,
