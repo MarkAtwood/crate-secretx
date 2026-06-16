@@ -13,12 +13,16 @@ secretx:wolfhsm:<label>[?server=<addr>&client_id=<n>]
 ```
 
 - `label` — NVM object label (1–24 bytes, UTF-8)
-- `server` — wolfHSM server address. Format: `host:port` for TCP
-  (e.g. `127.0.0.1:8080`), `[ip]:port` for IPv6, or `/path` for Unix domain
-  socket. TCP port must be ≤ 32767 (wolfhsm C transport uses `i16` for port).
-  Falls back to `WOLFHSM_SERVER` environment variable if absent.
+- `server` — wolfHSM server address. Falls back to `WOLFHSM_SERVER` env var.
+  Formats:
+  - `host:port` — TCP (e.g. `127.0.0.1:8080`). Port must be ≤ 32767.
+  - `[ip]:port` — IPv6 TCP (e.g. `[::1]:8080`).
+  - `shm:/name` — POSIX shared memory (e.g. `shm:/wolfhsm`). Same-host only.
+  - `/path` — Unix domain socket (requires `uds` feature).
 - `client_id` — wolfHSM client ID (0–255, default 1). Controls the NVM
   namespace on the server; two clients with the same ID share the same objects.
+- `req_size` — (SHM only) max request packet size in bytes (default 4096).
+- `resp_size` — (SHM only) max response packet size in bytes (default 4096).
 
 The `?server=` address is validated at construction time (syntax only, no
 connection). `WOLFHSM_SERVER` is validated at first use.
@@ -69,10 +73,18 @@ let store = secretx::from_uri("secretx:wolfhsm:my-secret")?;
 let value = store.get().await?;
 ```
 
+### Shared memory transport
+
+```rust
+let store = WolfHsmBackend::from_uri(
+    "secretx:wolfhsm:my-secret?server=shm:/wolfhsm&req_size=8192&resp_size=8192",
+)?;
+```
+
 ## Environment variable
 
 Set `WOLFHSM_SERVER` to the server address when not using the `?server=` query
-parameter:
+parameter (supports all transport formats including `shm:/name`):
 
 ```sh
 export WOLFHSM_SERVER=127.0.0.1:8080
