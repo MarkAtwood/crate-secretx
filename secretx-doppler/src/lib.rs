@@ -92,13 +92,21 @@ impl DopplerBackend {
         // `secrets.get` API — the response is always a single string, not a
         // JSON object.  ?field= extraction is not supported and would silently
         // return the full raw value, which is confusing.  Reject early.
-        if parsed.param("field").is_some() {
-            return Err(SecretError::InvalidUri(
-                "doppler does not support ?field= (Doppler secret values are raw strings, not \
-                 JSON objects); remove ?field= or use a backend that supports JSON field \
-                 extraction (e.g. aws-sm)"
-                    .into(),
-            ));
+        // Reject unknown query parameters to catch typos early.
+        // The only recognized parameter is ?field= (rejected below).
+        for key in parsed.param_keys() {
+            if key == "field" {
+                return Err(SecretError::InvalidUri(
+                    "doppler does not support ?field= (Doppler secret values are raw strings, \
+                     not JSON objects); remove ?field= or use a backend that supports JSON \
+                     field extraction (e.g. aws-sm)"
+                        .into(),
+                ));
+            }
+            return Err(SecretError::InvalidUri(format!(
+                "doppler URI: unknown query parameter `{key}`; \
+                 the doppler backend does not support query parameters"
+            )));
         }
 
         let token = std::env::var("DOPPLER_TOKEN").map_err(|_| SecretError::Unavailable {
@@ -323,6 +331,7 @@ mod tests {
     #[test]
     fn from_uri_missing_token() {
         if std::env::var("DOPPLER_TOKEN").is_ok() {
+            eprintln!("skipped: DOPPLER_TOKEN is set; unset it to test the missing-token path");
             return;
         }
         assert!(matches!(
