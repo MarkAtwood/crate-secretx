@@ -37,10 +37,21 @@ use secretx_core::{
     SecretError, SecretStore, SecretUri, SecretValue, SigningAlgorithm, SigningBackend,
     WritableSecretStore,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use zeroize::{Zeroize, Zeroizing};
 
 const BACKEND: &str = "pkcs11";
+
+/// Process-wide cache of initialized PKCS#11 contexts, keyed by canonical
+/// library path.  PKCS#11 spec (v2.40 §5.4) requires `C_Initialize` to be
+/// called exactly once per process per library.  Subsequent `from_uri` calls
+/// for the same `.so` reuse the existing `Arc<Pkcs11>`.
+fn pkcs11_ctx_cache() -> &'static Mutex<HashMap<PathBuf, Arc<Pkcs11>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<Pkcs11>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Classify a cryptoki error as transient ([`SecretError::Unavailable`]) or
 /// permanent ([`SecretError::Backend`]).
@@ -98,8 +109,10 @@ pub struct Pkcs11Backend {
 impl Pkcs11Backend {
     /// Construct from a `secretx:pkcs11:<slot>/<label>[?lib=<path>]` URI.
     ///
-    /// This call loads the PKCS#11 library and initialises it.  No session is
-    /// opened until a trait method is called.
+    /// The PKCS#11 library is loaded and initialised on the first call for a
+    /// given library path; subsequent calls reuse the existing context
+    /// (PKCS#11 spec requires exactly one `C_Initialize` per process per
+    /// library).  No session is opened until a trait method is called.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
         if parsed.backend() != "pkcs11" {
@@ -128,9 +141,26 @@ impl Pkcs11Backend {
                 )
             })?;
 
-        let ctx = Pkcs11::new(&lib_path).map_err(classify_ck)?;
-        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
-            .map_err(classify_ck)?;
+        let canon = std::fs::canonicalize(&lib_path).unwrap_or_else(|_| PathBuf::from(&lib_path));
+        let ctx = {
+            let mut cache = pkcs11_ctx_cache()
+                .lock()
+                .map_err(|_| SecretError::Backend {
+                    backend: BACKEND,
+                    source: "pkcs11 context cache mutex poisoned".into(),
+                })?;
+            if let Some(existing) = cache.get(&canon) {
+                Arc::clone(existing)
+            } else {
+                let new_ctx = Pkcs11::new(&lib_path).map_err(classify_ck)?;
+                new_ctx
+                    .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+                    .map_err(classify_ck)?;
+                let arc = Arc::new(new_ctx);
+                cache.insert(canon, Arc::clone(&arc));
+                arc
+            }
+        };
 
         let slots = ctx
             .get_slots_with_token()
@@ -150,7 +180,7 @@ impl Pkcs11Backend {
         let user_pin = std::env::var("PKCS11_PIN").ok().map(Zeroizing::new);
 
         Ok(Self {
-            ctx: Arc::new(ctx),
+            ctx,
             slot,
             label,
             user_pin,
