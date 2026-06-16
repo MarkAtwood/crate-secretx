@@ -141,6 +141,12 @@ impl From<Zeroizing<Vec<u8>>> for SecretValue {
     }
 }
 
+impl AsRef<[u8]> for SecretValue {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 // ── JSON scanners ─────────────────────────────────────────────────────────────
 //
 // There are two complementary hand-rolled JSON scanners in this file.  They are

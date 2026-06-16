@@ -8,7 +8,7 @@
 //!
 //! # Lock discipline
 //!
-//! The internal [`tokio::sync::Mutex`] is **never held across an `.await`
+//! The internal [`std::sync::Mutex`] is **never held across an `.await`
 //! point**. All cache reads and writes acquire the lock, copy the data they
 //! need, then drop the lock before any network call.
 //!
@@ -46,7 +46,7 @@ struct CachedEntry {
 pub struct CachingStore<S: SecretStore> {
     inner: Arc<S>,
     ttl: Duration,
-    cache: Arc<tokio::sync::Mutex<Option<CachedEntry>>>,
+    cache: Arc<std::sync::Mutex<Option<CachedEntry>>>,
 }
 
 impl<S: SecretStore> CachingStore<S> {
@@ -58,7 +58,7 @@ impl<S: SecretStore> CachingStore<S> {
         Self {
             inner,
             ttl,
-            cache: Arc::new(tokio::sync::Mutex::new(None)),
+            cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -72,7 +72,7 @@ impl<S: SecretStore> SecretStore for CachingStore<S> {
 
         // Check cache. The block scope releases the lock before the fetch below.
         {
-            let cache = self.cache.lock().await;
+            let cache = self.cache.lock().expect("cache mutex poisoned");
             if let Some(entry) = cache.as_ref() {
                 if entry.fetched_at.elapsed() < self.ttl {
                     return Ok(SecretValue::new(entry.bytes.to_vec()));
@@ -86,7 +86,7 @@ impl<S: SecretStore> SecretStore for CachingStore<S> {
         // Copy bytes for the cache entry before moving value into return position.
         let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
         {
-            let mut cache = self.cache.lock().await;
+            let mut cache = self.cache.lock().expect("cache mutex poisoned");
             *cache = Some(CachedEntry {
                 bytes: cached_bytes,
                 fetched_at: Instant::now(),
@@ -101,7 +101,7 @@ impl<S: SecretStore> SecretStore for CachingStore<S> {
 
         if self.ttl != Duration::ZERO {
             let cached_bytes = Zeroizing::new(value.as_bytes().to_vec());
-            let mut cache = self.cache.lock().await;
+            let mut cache = self.cache.lock().expect("cache mutex poisoned");
             *cache = Some(CachedEntry {
                 bytes: cached_bytes,
                 fetched_at: Instant::now(),
@@ -122,7 +122,7 @@ impl<S: WritableSecretStore> WritableSecretStore for CachingStore<S> {
         self.inner.put(value).await?;
 
         if self.ttl != Duration::ZERO {
-            let mut cache = self.cache.lock().await;
+            let mut cache = self.cache.lock().expect("cache mutex poisoned");
             *cache = Some(CachedEntry {
                 bytes: cached_bytes,
                 fetched_at: Instant::now(),
