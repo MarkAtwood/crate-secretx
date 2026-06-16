@@ -40,6 +40,7 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 /// defect in this backend.  For secrets that must not be visible in the
 /// process environment, use a backend that fetches on demand (e.g.
 /// `aws-sm`, `gcp-sm`, `vault`).
+#[derive(Debug)]
 pub struct EnvBackend {
     var: String,
 }

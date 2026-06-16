@@ -31,6 +31,7 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSec
 ///
 /// Parameters are fetched with decryption enabled (`SecureString` type).
 /// `put` writes a `SecureString` parameter (requires `ssm:PutParameter` permission).
+#[derive(Debug)]
 pub struct AwsSsmBackend {
     client: aws_sdk_ssm::Client,
     path: String,

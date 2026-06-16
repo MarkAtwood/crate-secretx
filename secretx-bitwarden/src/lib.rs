@@ -77,6 +77,15 @@ pub struct BitwardenBackend {
     session: tokio::sync::RwLock<Option<(Client, uuid::Uuid, uuid::Uuid, uuid::Uuid)>>,
 }
 
+impl std::fmt::Debug for BitwardenBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BitwardenBackend")
+            .field("project_name", &self.project_name)
+            .field("secret_name", &self.secret_name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl BitwardenBackend {
     /// Construct from a `secretx:bitwarden:<project-name>/<secret-name>` URI.
     ///

@@ -35,6 +35,7 @@ const BACKEND: &str = "aws-sm";
 ///
 /// Construct with [`from_uri`](AwsSmBackend::from_uri). The AWS client is
 /// built eagerly at construction time using `aws_config::load_from_env`.
+#[derive(Debug)]
 pub struct AwsSmBackend {
     client: Arc<aws_sdk_secretsmanager::Client>,
     /// Secret name or ARN as stored in Secrets Manager.

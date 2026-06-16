@@ -104,6 +104,7 @@ fn credential_name_valid(name: &str) -> Result<(), SecretError> {
 /// `get` and `refresh` read `$CREDENTIALS_DIRECTORY/<name>` as raw bytes.
 /// Read-only — credentials are injected by the service manager, not written
 /// by the service process itself.
+#[derive(Debug)]
 pub struct SystemdCredsBackend {
     name: String,
 }

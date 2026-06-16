@@ -111,6 +111,20 @@ pub struct GcpSmBackend {
     access_token: Zeroizing<String>,
 }
 
+impl std::fmt::Debug for GcpSmBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let version_label = match &self.version {
+            SecretVersion::Latest => "latest",
+            SecretVersion::Pinned(_) => "pinned",
+        };
+        f.debug_struct("GcpSmBackend")
+            .field("project", &self.project)
+            .field("secret", &self.secret)
+            .field("version", &version_label)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GcpSmBackend {
     /// Construct from a `secretx:gcp-sm:<project>/<secret>[?version=<ver>]` URI.
     ///

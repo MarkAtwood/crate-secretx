@@ -45,6 +45,7 @@ use sha2::{Digest as _, Sha256};
 /// Construct with [`AwsKmsBackend::from_uri`]. The AWS client is built once
 /// at construction time using the ambient environment credentials
 /// (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, instance metadata, etc.).
+#[derive(Debug)]
 pub struct AwsKmsBackend {
     client: Arc<aws_sdk_kms::Client>,
     key_id: String,

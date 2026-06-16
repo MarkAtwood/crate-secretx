@@ -133,6 +133,17 @@ pub struct VaultBackend {
     field: Option<String>,
 }
 
+impl std::fmt::Debug for VaultBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultBackend")
+            .field("addr", &self.addr)
+            .field("mount", &self.mount)
+            .field("secret_path", &self.secret_path)
+            .field("field", &self.field)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VaultBackend {
     /// Construct from a `secretx:vault:<mount>/<path>` URI.
     ///
