@@ -150,6 +150,9 @@ fn split_path(path: &str) -> Option<(String, String)> {
     // Azure vault names must be 3-24 characters, alphanumeric or hyphens.
     // Rejecting anything else prevents URL injection via the vault name
     // (e.g. "evil.com/x#" would redirect the HTTPS request to a different host).
+    if vault.len() < 3 || vault.len() > 24 {
+        return None;
+    }
     if !vault
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-')
