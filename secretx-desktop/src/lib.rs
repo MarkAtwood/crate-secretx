@@ -120,6 +120,10 @@ impl SecretStore for DesktopKeyringBackend {
                     backend: "desktop",
                     source: e,
                 }),
+                Err(keyring::Error::PlatformFailure(e)) => Err(SecretError::Unavailable {
+                    backend: "desktop",
+                    source: e,
+                }),
                 Err(e) => Err(SecretError::Backend {
                     backend: "desktop",
                     source: e.into(),
@@ -160,7 +164,8 @@ impl WritableSecretStore for DesktopKeyringBackend {
                     source: e.into(),
                 })?;
             entry.set_password(&s).map_err(|e| match e {
-                keyring::Error::NoStorageAccess(inner) => SecretError::Unavailable {
+                keyring::Error::NoStorageAccess(inner)
+                | keyring::Error::PlatformFailure(inner) => SecretError::Unavailable {
                     backend: "desktop",
                     source: inner,
                 },
