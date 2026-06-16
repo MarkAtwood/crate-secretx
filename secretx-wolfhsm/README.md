@@ -90,6 +90,13 @@ parameter (supports all transport formats including `shm:/name`):
 export WOLFHSM_SERVER=127.0.0.1:8080
 ```
 
+## TLS transport
+
+TLS transport (`posix_transport_tls`) is supported by the wolfHSM C library but
+not yet exposed by the `wolfhsm` Rust crate. This will be added in a future
+release. For encrypted transport today, use a TLS tunnel (e.g. stunnel) in front
+of a TCP connection.
+
 ## SigningBackend status
 
 `sign()` and `public_key_der()` return `SecretError::Unavailable`. The

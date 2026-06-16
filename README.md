@@ -74,7 +74,7 @@ secretx:<backend>:<path>[?options]
 | `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB`, pin from `PKCS11_PIN` |
 | `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
-| `secretx:wolfhsm:my-key?server=host:8080&client_id=1` | wolfHSM secure element | TCP, `shm:/name`, or `/path` (UDS); `WOLFHSM_SERVER` fallback |
+| `secretx:wolfhsm:my-key?server=host:8080&client_id=1` | wolfHSM secure element | TCP, `shm:/name`, or `/path` (UDS); TLS planned; `WOLFHSM_SERVER` fallback |
 | `secretx:k8s:default/my-secret` | Kubernetes Secret | `?key=` to select a single data key |
 
 The `from_uri` call constructs the backend and validates the URI syntax. It does not make any
