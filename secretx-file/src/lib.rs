@@ -30,6 +30,8 @@
 
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use std::io::Write;
+
+const BACKEND: &str = "file";
 use std::path::{Component, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -61,7 +63,7 @@ impl FileBackend {
     /// Does not read the file — construction only.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "file" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `file`, got `{}`",
                 parsed.backend()
@@ -113,14 +115,14 @@ impl SecretStore for FileBackend {
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::NotFound => SecretError::NotFound,
                     _ => SecretError::Backend {
-                        backend: "file",
+                        backend: BACKEND,
                         source: e.into(),
                     },
                 })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "file",
+            backend: BACKEND,
             source: e.into(),
         })?
     }
@@ -151,13 +153,13 @@ impl WritableSecretStore for FileBackend {
         let bytes = value.into_bytes();
         tokio::task::spawn_blocking(move || {
             write_secret_file(&path, &bytes).map_err(|e| SecretError::Backend {
-                backend: "file",
+                backend: BACKEND,
                 source: e.into(),
             })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "file",
+            backend: BACKEND,
             source: e.into(),
         })?
     }

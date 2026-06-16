@@ -38,6 +38,8 @@ use secretx_core::{
 };
 use sha2::{Digest as _, Sha256};
 
+const BACKEND: &str = "aws-kms";
+
 // ── Backend ───────────────────────────────────────────────────────────────────
 
 /// AWS KMS signing backend.
@@ -66,7 +68,7 @@ impl AwsKmsBackend {
     /// `InvalidKeyUsageException`.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "aws-kms" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `aws-kms`, got `{}`",
                 parsed.backend()
@@ -146,17 +148,17 @@ where
         let code = svc.meta().code().unwrap_or("");
         if is_transient_kms_code(code) {
             return SecretError::Unavailable {
-                backend: "aws-kms",
+                backend: BACKEND,
                 source: svc.to_string().into(),
             };
         }
         return SecretError::Backend {
-            backend: "aws-kms",
+            backend: BACKEND,
             source: svc.to_string().into(),
         };
     }
     SecretError::Unavailable {
-        backend: "aws-kms",
+        backend: BACKEND,
         source: sdk_err.to_string().into(),
     }
 }
@@ -171,7 +173,7 @@ where
 /// zero-padded to 32 bytes for P-256.
 fn ecdsa_der_to_raw_p256(der: &[u8]) -> Result<Vec<u8>, SecretError> {
     let parse_err = |msg: &'static str| SecretError::Backend {
-        backend: "aws-kms",
+        backend: BACKEND,
         source: format!("ECDSA DER signature parse failed: {msg}").into(),
     };
 
@@ -272,7 +274,7 @@ impl SigningBackend for AwsKmsBackend {
                 // syntactically valid, so this is a capability error not a URI error.
                 // Backend (not Unavailable): retrying will not add Ed25519 support.
                 return Err(SecretError::Backend {
-                    backend: "aws-kms",
+                    backend: BACKEND,
                     source: "Ed25519 is not supported by AWS KMS; use ecdsa-p256 or rsa-pss-2048"
                         .into(),
                 });
@@ -282,7 +284,7 @@ impl SigningBackend for AwsKmsBackend {
             // if this backend does not recognize the algorithm.
             _ => {
                 return Err(SecretError::Backend {
-                    backend: "aws-kms",
+                    backend: BACKEND,
                     source: format!("algorithm {:?} is not supported by AWS KMS", self.algorithm)
                         .into(),
                 });
@@ -314,7 +316,7 @@ impl SigningBackend for AwsKmsBackend {
         let sig_bytes = response
             .signature
             .ok_or_else(|| SecretError::Backend {
-                backend: "aws-kms",
+                backend: BACKEND,
                 source: "KMS sign response contained no signature".into(),
             })?
             .into_inner();
@@ -345,7 +347,7 @@ impl SigningBackend for AwsKmsBackend {
         Ok(response
             .public_key
             .ok_or_else(|| SecretError::Backend {
-                backend: "aws-kms",
+                backend: BACKEND,
                 source: "KMS get_public_key response contained no public key".into(),
             })?
             .into_inner())

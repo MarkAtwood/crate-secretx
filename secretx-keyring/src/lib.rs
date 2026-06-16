@@ -48,6 +48,8 @@ use std::sync::Arc;
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSecretStore};
 use zeroize::Zeroizing;
 
+const BACKEND: &str = "keyring";
+
 /// Probe that the kernel persistent keyring is reachable.
 ///
 /// Returns `Ok(())` if `keyctl_get_persistent` succeeds, or
@@ -61,7 +63,7 @@ use zeroize::Zeroizing;
 fn require_persistent_keyring() -> Result<(), SecretError> {
     use linux_keyutils::{KeyRing, KeyRingIdentifier};
     KeyRing::get_persistent(KeyRingIdentifier::Session).map_err(|e| SecretError::Unavailable {
-        backend: "keyring",
+        backend: BACKEND,
         source: format!(
             "persistent keyring unavailable (kernel CONFIG_PERSISTENT_KEYRINGS \
              may be disabled, or this environment restricts keyctl): {e}"
@@ -105,7 +107,7 @@ impl KeyringBackend {
     /// `service` and `account` must be non-empty).
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "keyring" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `keyring`, got `{}`",
                 parsed.backend()
@@ -156,7 +158,7 @@ impl SecretStore for KeyringBackend {
         tokio::task::spawn_blocking(move || {
             #[cfg(not(target_os = "linux"))]
             return Err(SecretError::Unavailable {
-                backend: "keyring",
+                backend: BACKEND,
                 source: "secretx-keyring requires Linux (kernel persistent keyring); \
                          not implemented on this platform"
                     .into(),
@@ -165,7 +167,7 @@ impl SecretStore for KeyringBackend {
             require_persistent_keyring()?;
             let entry =
                 keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: e.into(),
                 })?;
             // ZEROIZATION GAP: keyring crate returns plain String from the OS
@@ -176,18 +178,18 @@ impl SecretStore for KeyringBackend {
                 Ok(pw) => Ok(SecretValue::new(pw.into_bytes())),
                 Err(keyring::Error::NoEntry) => Err(SecretError::NotFound),
                 Err(keyring::Error::NoStorageAccess(e)) => Err(SecretError::Unavailable {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: e,
                 }),
                 Err(e) => Err(SecretError::Backend {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: e.into(),
                 }),
             }
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "keyring",
+            backend: BACKEND,
             source: e.into(),
         })?
     }
@@ -216,7 +218,7 @@ impl WritableSecretStore for KeyringBackend {
             {
                 let _ = (&service, &account, &s);
                 return Err(SecretError::Unavailable {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: "secretx-keyring requires Linux (kernel persistent keyring); \
                              not implemented on this platform"
                         .into(),
@@ -226,23 +228,23 @@ impl WritableSecretStore for KeyringBackend {
             require_persistent_keyring()?;
             let entry =
                 keyring::Entry::new(&service, &account).map_err(|e| SecretError::Backend {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: e.into(),
                 })?;
             entry.set_password(&s).map_err(|e| match e {
                 keyring::Error::NoStorageAccess(inner) => SecretError::Unavailable {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: inner,
                 },
                 other => SecretError::Backend {
-                    backend: "keyring",
+                    backend: BACKEND,
                     source: other.into(),
                 },
             })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "keyring",
+            backend: BACKEND,
             source: e.into(),
         })?
     }

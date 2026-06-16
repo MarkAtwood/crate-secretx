@@ -47,6 +47,8 @@ use std::path::PathBuf;
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
 use zeroize::Zeroizing;
 
+const BACKEND: &str = "systemd";
+
 /// Read a file into a [`Zeroizing<Vec<u8>>`], pre-sized from metadata to
 /// avoid reallocation-induced leaks of partial secret bytes.
 fn read_file_zeroizing(path: &std::path::Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
@@ -132,7 +134,7 @@ impl SystemdCredsBackend {
     /// or the credential name fails [`credential_name_valid`].
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "systemd" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `systemd`, got `{}`",
                 parsed.backend()
@@ -147,7 +149,7 @@ impl SystemdCredsBackend {
 
     fn credential_path(&self) -> Result<PathBuf, SecretError> {
         let dir = std::env::var("CREDENTIALS_DIRECTORY").map_err(|_| SecretError::Unavailable {
-            backend: "systemd",
+            backend: BACKEND,
             source: "$CREDENTIALS_DIRECTORY is not set — service must be started by systemd \
                          with LoadCredential= or LoadCredentialEncrypted= configured"
                 .into(),
@@ -166,14 +168,14 @@ impl SecretStore for SystemdCredsBackend {
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::NotFound => SecretError::NotFound,
                     _ => SecretError::Backend {
-                        backend: "systemd",
+                        backend: BACKEND,
                         source: e.into(),
                     },
                 })
         })
         .await
         .map_err(|e| SecretError::Backend {
-            backend: "systemd",
+            backend: BACKEND,
             source: e.into(),
         })?
     }

@@ -36,6 +36,8 @@
 
 use ed25519_dalek::pkcs8::DecodePrivateKey as Ed25519DecodePrivateKey;
 use secretx_core::{SecretError, SecretUri, SigningAlgorithm, SigningBackend};
+
+const BACKEND: &str = "local-signing";
 use signature::{SignatureEncoding, Signer};
 use zeroize::Zeroizing;
 
@@ -90,7 +92,7 @@ impl LocalSigningBackend {
     /// is dropped.
     pub fn from_uri(uri: &str) -> Result<Self, SecretError> {
         let parsed = SecretUri::parse(uri)?;
-        if parsed.backend() != "local-signing" {
+        if parsed.backend() != BACKEND {
             return Err(SecretError::InvalidUri(format!(
                 "expected backend `local-signing`, got `{}`",
                 parsed.backend()
@@ -140,7 +142,7 @@ impl LocalSigningBackend {
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => SecretError::NotFound,
                 _ => SecretError::Backend {
-                    backend: "local-signing",
+                    backend: BACKEND,
                     source: e.into(),
                 },
             })?;
@@ -167,7 +169,7 @@ fn parse_key(
         "ed25519" => {
             let key = ed25519_dalek::SigningKey::from_pkcs8_der(key_bytes).map_err(|e| {
                 SecretError::Backend {
-                    backend: "local-signing",
+                    backend: BACKEND,
                     source: format!("ed25519 PKCS#8 parse error: {e}").into(),
                 }
             })?;
@@ -177,7 +179,7 @@ fn parse_key(
             use p256::pkcs8::DecodePrivateKey as _;
             let key = p256::ecdsa::SigningKey::from_pkcs8_der(key_bytes).map_err(|e| {
                 SecretError::Backend {
-                    backend: "local-signing",
+                    backend: BACKEND,
                     source: format!("P-256 PKCS#8 parse error: {e}").into(),
                 }
             })?;
@@ -187,7 +189,7 @@ fn parse_key(
             use pkcs8::DecodePrivateKey as _;
             let key = rsa::RsaPrivateKey::from_pkcs8_der(key_bytes).map_err(|e| {
                 SecretError::Backend {
-                    backend: "local-signing",
+                    backend: BACKEND,
                     source: format!("RSA PKCS#8 parse error: {e}").into(),
                 }
             })?;
@@ -235,7 +237,7 @@ impl SigningBackend for LocalSigningBackend {
                 })
                 .await
                 .map_err(|e| SecretError::Backend {
-                    backend: "local-signing",
+                    backend: BACKEND,
                     source: format!("RSA sign task panicked: {e}").into(),
                 })
             }
@@ -250,7 +252,7 @@ impl SigningBackend for LocalSigningBackend {
                 vk.to_public_key_der()
                     .map(|d| d.to_vec())
                     .map_err(|e| SecretError::Backend {
-                        backend: "local-signing",
+                        backend: BACKEND,
                         source: format!("Ed25519 public key encode error: {e}").into(),
                     })
             }
@@ -259,7 +261,7 @@ impl SigningBackend for LocalSigningBackend {
                 vk.to_public_key_der()
                     .map(|d| d.to_vec())
                     .map_err(|e| SecretError::Backend {
-                        backend: "local-signing",
+                        backend: BACKEND,
                         source: format!("P-256 public key encode error: {e}").into(),
                     })
             }
@@ -276,7 +278,7 @@ impl SigningBackend for LocalSigningBackend {
                     .to_public_key_der()
                     .map(|d| d.to_vec())
                     .map_err(|e| SecretError::Backend {
-                        backend: "local-signing",
+                        backend: BACKEND,
                         source: format!("RSA public key encode error: {e}").into(),
                     })
             }
