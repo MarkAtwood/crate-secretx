@@ -16,4 +16,5 @@ async-trait = { workspace = true }
 inventory = { workspace = true }
 secretx-core = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
+zeroize = { workspace = true }
 

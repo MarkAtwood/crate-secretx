@@ -32,6 +32,18 @@ use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue, WritableSec
 use std::io::Write;
 use std::path::{Component, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use zeroize::Zeroizing;
+
+/// Read a file into a [`Zeroizing<Vec<u8>>`], pre-sized from metadata to
+/// avoid reallocation-induced leaks of partial secret bytes.
+fn read_file_zeroizing(path: &std::path::Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut buf = Zeroizing::new(Vec::with_capacity(len));
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
 
 /// Backend that reads a secret from a single file.
 ///
@@ -93,12 +105,14 @@ impl SecretStore for FileBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || {
-            // ZEROIZATION GAP: std::fs::read returns a plain Vec<u8>.  The Vec is
-            // moved directly into SecretValue::new (→ Zeroizing), so no orphaned
-            // copy exists.  Internal reallocation during the read is a std::fs::read
-            // limitation, not something we can address at this layer.
-            std::fs::read(&path)
-                .map(SecretValue::new)
+            // Pre-size a Zeroizing buffer from file metadata to avoid
+            // reallocation-induced leaks of partial secret bytes.
+            read_file_zeroizing(&path)
+                .map(|mut buf| {
+                    // Move bytes out of Zeroizing (leaves empty vec that is
+                    // no-op to zeroize on drop). String::into_bytes()-equivalent.
+                    SecretValue::new(std::mem::take(&mut *buf))
+                })
                 .map_err(|e| match e.kind() {
                     std::io::ErrorKind::NotFound => SecretError::NotFound,
                     _ => SecretError::Backend {
