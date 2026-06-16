@@ -66,6 +66,15 @@ impl FileBackend {
                 "file URI path must not contain '..' components".into(),
             ));
         }
+        // Reject paths with no file_name (e.g. "/" or "foo/").  These would
+        // pass from_uri but fail at put() time with an opaque error.
+        if path.file_name().is_none() {
+            return Err(SecretError::InvalidUri(
+                "file URI path must end with a file name, not a directory \
+                 (e.g. `secretx:file:/etc/secret.txt`, not `secretx:file:/`)"
+                    .into(),
+            ));
+        }
         Ok(Self { path })
     }
 }
@@ -305,6 +314,20 @@ mod tests {
             FileBackend::from_uri("secretx:file"),
             Err(SecretError::InvalidUri(_))
         ));
+    }
+
+    #[test]
+    fn from_uri_root_slash_rejected() {
+        assert!(matches!(
+            FileBackend::from_uri("secretx:file:/"),
+            Err(SecretError::InvalidUri(_))
+        ));
+    }
+
+    #[test]
+    fn from_uri_trailing_slash_ok() {
+        // "foo/" normalizes to "foo" which has a valid file_name.
+        FileBackend::from_uri("secretx:file:foo/").unwrap();
     }
 
     #[tokio::test]
