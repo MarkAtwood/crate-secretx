@@ -49,6 +49,15 @@ pub struct CachingStore<S: SecretStore> {
     cache: Arc<std::sync::Mutex<Option<CachedEntry>>>,
 }
 
+impl<S: SecretStore> std::fmt::Debug for CachingStore<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachingStore")
+            .field("ttl", &self.ttl)
+            .field("cached", &self.cache.lock().map(|g| g.is_some()).unwrap_or(false))
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S: SecretStore> CachingStore<S> {
     /// Create a new [`CachingStore`] wrapping `inner` with the given `ttl`.
     ///
