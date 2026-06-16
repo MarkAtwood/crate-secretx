@@ -39,6 +39,17 @@ use secretx_core::{SecretError, SecretUri, SigningAlgorithm, SigningBackend};
 use signature::{SignatureEncoding, Signer};
 use zeroize::Zeroizing;
 
+/// Read a file into a [`Zeroizing<Vec<u8>>`], pre-sized from file metadata to
+/// avoid reallocation-induced leaks of partial secret key bytes.
+fn read_file_zeroizing(path: &str) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut buf = Zeroizing::new(Vec::with_capacity(len));
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 // ── Key storage ───────────────────────────────────────────────────────────────
 
 enum LocalKey {
@@ -112,14 +123,11 @@ impl LocalSigningBackend {
         // always return InvalidUri, not a Backend/NotFound error.
         validate_algorithm(algo_str)?;
 
-        // Read key bytes into a zeroizing buffer so raw material is cleared
-        // after parsing regardless of success or failure.
-        let key_bytes: Zeroizing<Vec<u8>> = std::fs::read(parsed.path())
-            .map(Zeroizing::new)
+        // Read key bytes into a pre-sized Zeroizing buffer.  std::fs::read()
+        // grows its internal Vec, leaking partial key copies through freed
+        // allocations.  Pre-sizing from metadata avoids reallocation.
+        let key_bytes: Zeroizing<Vec<u8>> = read_file_zeroizing(parsed.path())
             .map_err(|e| match e.kind() {
-                // NotFound maps to SecretError::NotFound so callers that check
-                // for a missing key (e.g. to fall back to another backend) see
-                // the same error variant as every other backend.
                 std::io::ErrorKind::NotFound => SecretError::NotFound,
                 _ => SecretError::Backend {
                     backend: "local-signing",
