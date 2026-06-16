@@ -336,10 +336,12 @@ impl WritableSecretStore for AzureKvBackend {
         }
         let raw = std::str::from_utf8(value.as_bytes())
             .map(str::to_owned)
-            .map_err(|_| {
-                SecretError::DecodeFailed(
-                    "Azure Key Vault secrets must be valid UTF-8 strings".into(),
-                )
+            .map_err(|e| {
+                SecretError::DecodeFailed(format!(
+                    "Azure Key Vault secrets must be valid UTF-8 strings \
+                     (invalid byte at position {})",
+                    e.valid_up_to()
+                ))
             })?;
 
         let params = SetSecretParameters {
