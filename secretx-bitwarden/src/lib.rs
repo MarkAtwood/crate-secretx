@@ -375,6 +375,8 @@ mod tests {
     #[test]
     fn from_uri_wrong_backend() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy") };
         assert!(matches!(
             BitwardenBackend::from_uri("secretx:env:FOO"),
@@ -385,6 +387,8 @@ mod tests {
     #[test]
     fn from_uri_wrong_scheme() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy") };
         assert!(matches!(
             BitwardenBackend::from_uri("https://bitwarden/proj/sec"),
@@ -395,6 +399,8 @@ mod tests {
     #[test]
     fn from_uri_missing_secret_name() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy") };
         assert!(matches!(
             BitwardenBackend::from_uri("secretx:bitwarden:only-project"),
@@ -405,6 +411,8 @@ mod tests {
     #[test]
     fn from_uri_empty_project() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy") };
         assert!(matches!(
             BitwardenBackend::from_uri("secretx:bitwarden:/secret-name"),
@@ -415,6 +423,8 @@ mod tests {
     #[test]
     fn from_uri_missing_token() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::remove_var("BWS_ACCESS_TOKEN") };
         assert!(matches!(
             BitwardenBackend::from_uri("secretx:bitwarden:proj/sec"),
@@ -425,6 +435,8 @@ mod tests {
     #[test]
     fn from_uri_valid() {
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy-token") };
         let backend = BitwardenBackend::from_uri("secretx:bitwarden:my-project/my-secret");
         assert!(backend.is_ok());
@@ -439,6 +451,8 @@ mod tests {
         // be rejected before BWS_ACCESS_TOKEN is read.  Use a dummy token to
         // get past path validation so the ?field= guard is exercised.
         let _g = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes all env-var mutations within this
+        // test binary; no other thread reads BWS_ACCESS_TOKEN concurrently.
         unsafe { std::env::set_var("BWS_ACCESS_TOKEN", "dummy-token") };
         let result =
             BitwardenBackend::from_uri("secretx:bitwarden:my-project/my-secret?field=password");
