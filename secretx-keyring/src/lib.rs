@@ -356,6 +356,20 @@ mod tests {
         matches!(e, SecretError::Unavailable { .. })
     }
 
+    /// Drop guard that deletes a keyring entry on drop, ensuring cleanup
+    /// even if an assertion panics mid-test.
+    struct KeyringCleanup {
+        svc: &'static str,
+        acct: &'static str,
+    }
+    impl Drop for KeyringCleanup {
+        fn drop(&mut self) {
+            if let Ok(entry) = keyring::Entry::new(self.svc, self.acct) {
+                let _ = entry.delete_credential();
+            }
+        }
+    }
+
     #[tokio::test]
     async fn integration_roundtrip() {
         if std::env::var("SECRETX_KEYRING_INTEGRATION_TESTS").as_deref() != Ok("1") {
@@ -368,7 +382,9 @@ mod tests {
 
         let backend = KeyringBackend::from_uri(&uri).unwrap();
 
-        // Clean up any leftover entry from a previous run.
+        // Clean up any leftover entry from a previous run, and install a
+        // drop guard so cleanup happens even if assertions panic.
+        let _cleanup = KeyringCleanup { svc, acct };
         if let Ok(entry) = keyring::Entry::new(svc, acct) {
             let _ = entry.delete_credential();
         }
@@ -394,12 +410,8 @@ mod tests {
         let refreshed = backend.refresh().await.expect("refresh failed");
         assert_eq!(refreshed.as_bytes(), b"test-secret-value");
 
-        // Clean up.
-        if let Ok(entry) = keyring::Entry::new(svc, acct) {
-            let _ = entry.delete_credential();
-        }
-
-        // After deletion, get should return NotFound.
+        // Drop guard handles cleanup. Verify post-deletion state.
+        drop(_cleanup);
         let after = backend.get().await;
         assert!(
             matches!(after, Err(SecretError::NotFound)),
