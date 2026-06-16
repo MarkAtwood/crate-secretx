@@ -18,4 +18,3 @@ aws-config = { workspace = true }
 aws-sdk-ssm = { workspace = true }
 inventory = { workspace = true }
 tokio = { workspace = true }
-zeroize = { workspace = true }
