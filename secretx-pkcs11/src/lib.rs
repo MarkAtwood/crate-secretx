@@ -106,6 +106,16 @@ pub struct Pkcs11Backend {
     algorithm_cache: Arc<std::sync::OnceLock<SigningAlgorithm>>,
 }
 
+impl std::fmt::Debug for Pkcs11Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pkcs11Backend")
+            .field("slot", &self.slot)
+            .field("label", &self.label)
+            .field("has_pin", &self.user_pin.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Pkcs11Backend {
     /// Construct from a `secretx:pkcs11:<slot>/<label>[?lib=<path>]` URI.
     ///
