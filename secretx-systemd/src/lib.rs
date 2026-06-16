@@ -45,6 +45,18 @@
 use std::path::PathBuf;
 
 use secretx_core::{SecretError, SecretStore, SecretUri, SecretValue};
+use zeroize::Zeroizing;
+
+/// Read a file into a [`Zeroizing<Vec<u8>>`], pre-sized from metadata to
+/// avoid reallocation-induced leaks of partial secret bytes.
+fn read_file_zeroizing(path: &std::path::Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut buf = Zeroizing::new(Vec::with_capacity(len));
+    f.read_to_end(&mut buf)?;
+    Ok(buf)
+}
 
 /// Validate a systemd credential name per systemd's `credential_name_valid()`.
 ///
@@ -148,17 +160,22 @@ impl SystemdCredsBackend {
 impl SecretStore for SystemdCredsBackend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let path = self.credential_path()?;
-        // ZEROIZATION GAP: tokio::fs::read (delegates to std::fs::read) returns
-        // a plain Vec<u8>.  The Vec is moved directly into SecretValue::new
-        // (→ Zeroizing), so no orphaned copy exists.
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => Ok(SecretValue::new(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(SecretError::NotFound),
-            Err(e) => Err(SecretError::Backend {
-                backend: "systemd",
-                source: e.into(),
-            }),
-        }
+        tokio::task::spawn_blocking(move || {
+            read_file_zeroizing(&path)
+                .map(SecretValue::from_zeroizing)
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::NotFound => SecretError::NotFound,
+                    _ => SecretError::Backend {
+                        backend: "systemd",
+                        source: e.into(),
+                    },
+                })
+        })
+        .await
+        .map_err(|e| SecretError::Backend {
+            backend: "systemd",
+            source: e.into(),
+        })?
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
