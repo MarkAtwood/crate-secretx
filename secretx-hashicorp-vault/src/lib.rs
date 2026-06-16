@@ -190,7 +190,13 @@ impl VaultBackend {
             );
 
         let field = parsed.param("field").map(str::to_owned);
-        let http_client = reqwest::Client::new();
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| SecretError::Backend {
+                backend: BACKEND,
+                source: e.into(),
+            })?;
 
         Ok(Self {
             http_client,
