@@ -252,22 +252,22 @@ impl secretx_core::WritableSecretStore for K8sBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: BACKEND,
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    BACKEND,
+    |uri: &str| {
         K8sBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: BACKEND,
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    BACKEND,
+    |uri: &str| {
         K8sBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //

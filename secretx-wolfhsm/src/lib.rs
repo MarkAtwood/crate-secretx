@@ -535,22 +535,22 @@ fn signing_unavailable(label: &str) -> SecretError {
 
 // ── Inventory registrations ───────────────────────────────────────────────────
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: BACKEND,
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    BACKEND,
+    |uri: &str| {
         WolfHsmBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: BACKEND,
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    BACKEND,
+    |uri: &str| {
         WolfHsmBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // SigningBackendRegistration is intentionally NOT registered: the wolfhsm
 // crate does not yet expose EccP256Key::load_from_nvm, so all SigningBackend

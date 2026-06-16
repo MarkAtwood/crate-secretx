@@ -241,22 +241,22 @@ impl WritableSecretStore for DopplerBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "doppler",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "doppler",
+    |uri: &str| {
         DopplerBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "doppler",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "doppler",
+    |uri: &str| {
         DopplerBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

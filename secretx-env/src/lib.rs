@@ -72,13 +72,13 @@ impl SecretStore for EnvBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "env",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "env",
+    |uri: &str| {
         EnvBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

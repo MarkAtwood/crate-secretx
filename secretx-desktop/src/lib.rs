@@ -178,22 +178,22 @@ impl WritableSecretStore for DesktopKeyringBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "desktop",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "desktop",
+    |uri: &str| {
         DesktopKeyringBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "desktop",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "desktop",
+    |uri: &str| {
         DesktopKeyringBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

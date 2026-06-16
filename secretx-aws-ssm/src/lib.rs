@@ -242,22 +242,22 @@ impl WritableSecretStore for AwsSsmBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "aws-ssm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "aws-ssm",
+    |uri: &str| {
         AwsSsmBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "aws-ssm",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "aws-ssm",
+    |uri: &str| {
         AwsSsmBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 #[cfg(test)]
 mod tests {

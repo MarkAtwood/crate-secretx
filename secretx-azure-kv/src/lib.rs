@@ -372,17 +372,17 @@ impl WritableSecretStore for AzureKvBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "azure-kv",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "azure-kv",
+    |uri: &str| {
         AzureKvBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "azure-kv",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "azure-kv",
+    |uri: &str| {
         // Reject ?field= at construction time: put() cannot write a single
         // JSON field without a read-modify-write race.  Fail early rather than
         // returning InvalidUri from put() at rotation time.
@@ -400,7 +400,7 @@ inventory::submit!(secretx_core::WritableBackendRegistration {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

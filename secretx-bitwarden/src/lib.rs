@@ -346,13 +346,13 @@ impl SecretStore for BitwardenBackend {
     }
 }
 
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "bitwarden",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "bitwarden",
+    |uri: &str| {
         BitwardenBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

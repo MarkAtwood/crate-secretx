@@ -262,13 +262,13 @@ impl SigningBackend for LocalSigningBackend {
     }
 }
 
-inventory::submit!(secretx_core::SigningBackendRegistration {
-    name: "local-signing",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::SigningBackendRegistration::new(
+    "local-signing",
+    |uri: &str| {
         LocalSigningBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SigningBackend>)
     },
-});
+));
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

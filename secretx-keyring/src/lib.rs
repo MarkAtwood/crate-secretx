@@ -189,23 +189,23 @@ impl WritableSecretStore for KeyringBackend {
 }
 
 #[cfg(target_os = "linux")]
-inventory::submit!(secretx_core::BackendRegistration {
-    name: "keyring",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::BackendRegistration::new(
+    "keyring",
+    |uri: &str| {
         KeyringBackend::from_uri(uri)
             .map(|b| std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::SecretStore>)
     },
-});
+));
 
 #[cfg(target_os = "linux")]
-inventory::submit!(secretx_core::WritableBackendRegistration {
-    name: "keyring",
-    factory: |uri: &str| {
+inventory::submit!(secretx_core::WritableBackendRegistration::new(
+    "keyring",
+    |uri: &str| {
         KeyringBackend::from_uri(uri).map(|b| {
             std::sync::Arc::new(b) as std::sync::Arc<dyn secretx_core::WritableSecretStore>
         })
     },
-});
+));
 
 #[cfg(test)]
 mod tests {
