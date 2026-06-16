@@ -172,8 +172,9 @@ impl signature::Signer<ed25519::Signature> for Ed25519Signer {
 ///
 /// Validates at construction that the backend's algorithm is ECDSA P-256.
 /// The backend must return signatures as 64 bytes of fixed-size `r || s`
-/// (two 32-byte big-endian scalars), not DER-encoded. This is the format
-/// specified by [`SigningBackend::sign`].
+/// (two 32-byte big-endian scalars), not DER-encoded. Each scalar must be
+/// in \[1, n-1\] per the ECDSA spec; out-of-range values are rejected by
+/// `from_slice`. This is the format specified by [`SigningBackend::sign`].
 #[cfg(feature = "ecdsa-p256")]
 #[derive(Clone)]
 pub struct EcdsaP256Signer {
