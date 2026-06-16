@@ -83,7 +83,8 @@ fn require_persistent_keyring() -> Result<(), SecretError> {
 /// ```
 ///
 /// `get` and `refresh` retrieve the stored password string.
-/// `put` writes a new password string; the value must be valid UTF-8.
+/// `put` writes a new password string; the value must be valid UTF-8 and
+/// non-empty (the kernel keyutils subsystem rejects empty secrets).
 #[derive(Debug)]
 pub struct KeyringBackend {
     service: String,
@@ -416,6 +417,21 @@ mod tests {
         assert!(
             matches!(after, Err(SecretError::NotFound)),
             "expected NotFound after delete"
+        );
+    }
+
+    /// Empty secrets are rejected by the kernel keyutils subsystem.
+    #[tokio::test]
+    async fn integration_empty_secret_rejected() {
+        if std::env::var("SECRETX_KEYRING_INTEGRATION_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+        let backend =
+            KeyringBackend::from_uri("secretx:keyring:secretx-test/empty-reject").unwrap();
+        let result = backend.put(SecretValue::new(Vec::new())).await;
+        assert!(
+            result.is_err(),
+            "empty secret should be rejected, got Ok"
         );
     }
 }
