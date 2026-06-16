@@ -518,6 +518,11 @@ impl WritableSecretStore for Pkcs11Backend {
             // until the next successful put() collects it.  Do NOT return Err here:
             // doing so falsely signals that the write failed, and a caller retry would
             // create yet another duplicate.
+            //
+            // NOTE: destroy failures are currently invisible (no logging
+            // infrastructure).  If duplicates accumulate, the next get() will
+            // return SecretError::Backend with a "found N objects" message
+            // from find_object's duplicate check — that is the observable signal.
             for handle in existing {
                 let _ = session.destroy_object(handle);
             }
