@@ -40,8 +40,9 @@
 //! `put()` overwrites an existing object (same label → same NVM ID) or creates
 //! a new one (first unused NVM ID). wolfHSM NVM overwrite is not atomic: the
 //! old object is deleted before the new one is added. If the add fails after a
-//! successful delete, [`SecretError::Backend`] is returned and the data is
-//! lost. This matches the wolfhsm crate's documented `nvm_overwrite` contract.
+//! successful delete, [`SecretError::DataLost`] is returned with the NVM ID
+//! that was destroyed. This matches the wolfhsm crate's `nvm_overwrite`
+//! contract (`wolfhsm::Error::DataLost { id }`).
 //!
 //! # SigningBackend
 //!
@@ -535,7 +536,16 @@ impl WritableSecretStore for WolfHsmBackend {
                     guard
                         .connected_client()
                         .nvm_overwrite(id, wolfhsm::NvmAccess(0), wolfhsm::NvmFlags(0), &label, bytes.as_ref())
-                        .map_err(backend_err)?;
+                        .map_err(|e| match e {
+                            wolfhsm::Error::DataLost { id } => SecretError::DataLost {
+                                backend: BACKEND,
+                                message: format!(
+                                    "NVM object {id} (label `{label}`) was deleted but \
+                                     the replacement write failed; original data is gone"
+                                ),
+                            },
+                            other => backend_err(other),
+                        })?;
                     // find_cached_or_scan already set cached_nvm_id = Some(id);
                     // this write is defensive — makes the cache invariant visible
                     // at the call site and guards against future refactors that

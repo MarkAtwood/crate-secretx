@@ -1030,6 +1030,19 @@ pub enum SecretError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// Data was irrecoverably lost during a write operation.
+    ///
+    /// The backend deleted existing data but failed to write the
+    /// replacement.  The original data is permanently gone.  Callers
+    /// should log an alert and may need to recreate the lost entry.
+    ///
+    /// `message` describes what was lost (e.g. an object ID or key name).
+    #[error("backend `{backend}` data lost: {message}")]
+    DataLost {
+        backend: &'static str,
+        message: String,
+    },
 }
 
 // ── SecretUri helpers ─────────────────────────────────────────────────────────
