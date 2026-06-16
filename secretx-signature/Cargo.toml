@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Adapter bridging secretx::SigningBackend to signature::Signer."
-keywords = ["secrets", "signature", "signer", "adapter"]
+keywords = ["secrets", "signature", "signer", "adapter", "security"]
 categories = ["cryptography", "authentication"]
 repository = "https://github.com/MarkAtwood/crate-secretx"
 readme = "README.md"
@@ -14,7 +14,7 @@ readme = "README.md"
 [dependencies]
 secretx-core = { workspace = true }
 signature = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt"], optional = true }
 
 ed25519 = { workspace = true, optional = true }
 p256 = { workspace = true, optional = true }
@@ -29,9 +29,9 @@ tokio = { workspace = true }
 
 [features]
 default = []
-ed25519 = ["dep:ed25519"]
-ecdsa-p256 = ["dep:p256"]
-rsa-pss = ["dep:rsa"]
+ed25519 = ["dep:ed25519", "dep:tokio"]
+ecdsa-p256 = ["dep:p256", "dep:tokio"]
+rsa-pss = ["dep:rsa", "dep:tokio"]
 
 [package.metadata.docs.rs]
 all-features = true

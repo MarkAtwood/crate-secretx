@@ -144,6 +144,7 @@ impl Ed25519Signer {
     }
 
     /// Unwrap, returning the inner `SigningBackend`.
+    #[must_use]
     pub fn into_inner(self) -> Arc<dyn SigningBackend> {
         self.backend
     }
@@ -208,6 +209,7 @@ impl EcdsaP256Signer {
     }
 
     /// Unwrap, returning the inner `SigningBackend`.
+    #[must_use]
     pub fn into_inner(self) -> Arc<dyn SigningBackend> {
         self.backend
     }
@@ -275,6 +277,7 @@ impl RsaPss2048Signer {
     }
 
     /// Unwrap, returning the inner `SigningBackend`.
+    #[must_use]
     pub fn into_inner(self) -> Arc<dyn SigningBackend> {
         self.backend
     }
@@ -481,6 +484,22 @@ mod tests {
             let signer = EcdsaP256Signer::new(backend).unwrap();
             assert!(signer.try_sign(b"msg").is_err());
         }
+
+        #[test]
+        fn into_inner_returns_backend() {
+            let backend = mock(SigningAlgorithm::EcdsaP256Sha256, vec![1u8; 64]);
+            let signer = EcdsaP256Signer::new(backend).unwrap();
+            let recovered = signer.into_inner();
+            assert_eq!(recovered.algorithm().unwrap(), SigningAlgorithm::EcdsaP256Sha256);
+        }
+
+        #[test]
+        fn debug_impl_does_not_leak_key_material() {
+            let backend = mock(SigningAlgorithm::EcdsaP256Sha256, vec![1u8; 64]);
+            let signer = EcdsaP256Signer::new(backend).unwrap();
+            let dbg = format!("{signer:?}");
+            assert!(dbg.contains("EcdsaP256Signer"));
+        }
     }
 
     // ── RSA-PSS ──────────────────────────────────────────────────────────────
@@ -518,6 +537,22 @@ mod tests {
             let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0xAB; 128]);
             let signer = RsaPss2048Signer::new(backend).unwrap();
             assert!(signer.try_sign(b"msg").is_err());
+        }
+
+        #[test]
+        fn into_inner_returns_backend() {
+            let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0u8; 256]);
+            let signer = RsaPss2048Signer::new(backend).unwrap();
+            let recovered = signer.into_inner();
+            assert_eq!(recovered.algorithm().unwrap(), SigningAlgorithm::RsaPss2048Sha256);
+        }
+
+        #[test]
+        fn debug_impl_does_not_leak_key_material() {
+            let backend = mock(SigningAlgorithm::RsaPss2048Sha256, vec![0u8; 256]);
+            let signer = RsaPss2048Signer::new(backend).unwrap();
+            let dbg = format!("{signer:?}");
+            assert!(dbg.contains("RsaPss2048Signer"));
         }
     }
 }
