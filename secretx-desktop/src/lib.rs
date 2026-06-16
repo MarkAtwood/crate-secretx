@@ -41,6 +41,7 @@ use zeroize::Zeroizing;
 ///
 /// On Linux this requires a running Secret Service daemon (GNOME Keyring or
 /// KWallet). Use `secretx-keyring` or `secretx-systemd` for headless operation.
+#[derive(Debug)]
 pub struct DesktopKeyringBackend {
     service: String,
     account: String,
@@ -183,6 +184,10 @@ impl WritableSecretStore for DesktopKeyringBackend {
     }
 }
 
+// Only register on desktop platforms where the keyring crate has a real
+// backend (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+// On other targets (iOS, Android, embedded) keyring falls back to a mock store.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 inventory::submit!(secretx_core::BackendRegistration::new(
     "desktop",
     |uri: &str| {
@@ -191,6 +196,7 @@ inventory::submit!(secretx_core::BackendRegistration::new(
     },
 ));
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 inventory::submit!(secretx_core::WritableBackendRegistration::new(
     "desktop",
     |uri: &str| {
