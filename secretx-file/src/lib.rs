@@ -143,6 +143,11 @@ impl WritableSecretStore for FileBackend {
     /// written with default permissions, which may be world-readable depending
     /// on the system configuration. If you need restrictive ACLs on Windows,
     /// set them separately after construction.
+    ///
+    /// **Caveat**: if the write or rename fails, a best-effort cleanup removes
+    /// the temp file.  If cleanup itself fails (e.g. the parent directory
+    /// becomes read-only), a hidden `0600` temp file containing the secret may
+    /// be left in the parent directory.
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         let path = Arc::clone(&self.path);
         // into_bytes() consumes value and returns Zeroizing<Vec<u8>>, keeping
