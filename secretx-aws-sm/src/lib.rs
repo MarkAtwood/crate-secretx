@@ -104,12 +104,12 @@ fn map_get_error(e: SdkError<GetSecretValueError>) -> SecretError {
         {
             return SecretError::Unavailable {
                 backend: BACKEND,
-                source: format!("{svc}").into(),
+                source: svc.to_string().into(),
             };
         }
         return SecretError::Backend {
             backend: BACKEND,
-            source: format!("{svc}").into(),
+            source: svc.to_string().into(),
         };
     }
     // Network failure, timeout, dispatch error — transient; retry is appropriate.
@@ -134,12 +134,12 @@ fn map_put_error(e: SdkError<PutSecretValueError>) -> SecretError {
         {
             return SecretError::Unavailable {
                 backend: BACKEND,
-                source: format!("{svc}").into(),
+                source: svc.to_string().into(),
             };
         }
         return SecretError::Backend {
             backend: BACKEND,
-            source: format!("{svc}").into(),
+            source: svc.to_string().into(),
         };
     }
     // Network failure, timeout, dispatch error — transient; retry is appropriate.

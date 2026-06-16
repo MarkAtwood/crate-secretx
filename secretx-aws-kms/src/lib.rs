@@ -246,13 +246,13 @@ impl SigningBackend for AwsKmsBackend {
                     if code == "ThrottlingException" || code == "RequestThrottledException" {
                         return SecretError::Unavailable {
                             backend: "aws-kms",
-                            source: format!("{svc}").into(),
+                            source: svc.to_string().into(),
                         };
                     }
                     // Permission denied, invalid key state, etc. — permanent.
                     return SecretError::Backend {
                         backend: "aws-kms",
-                        source: format!("{svc}").into(),
+                        source: svc.to_string().into(),
                     };
                 }
                 // Network failure, timeout, credential error — not a service error.
@@ -298,12 +298,12 @@ impl SigningBackend for AwsKmsBackend {
                     if code == "ThrottlingException" || code == "RequestThrottledException" {
                         return SecretError::Unavailable {
                             backend: "aws-kms",
-                            source: format!("{svc}").into(),
+                            source: svc.to_string().into(),
                         };
                     }
                     return SecretError::Backend {
                         backend: "aws-kms",
-                        source: format!("{svc}").into(),
+                        source: svc.to_string().into(),
                     };
                 }
                 SecretError::Unavailable {
