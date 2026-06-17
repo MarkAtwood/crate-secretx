@@ -332,12 +332,29 @@ impl WritableSecretStore for Tpm2Backend {
                 .map_err(map_tpm_error)?;
             let nv_index_handle = NvIndexHandle::from(nv_handle);
 
+            // Verify data length matches the NV index's defined size.
+            // TPM NV indices have a fixed size; a short write leaves stale
+            // bytes visible to subsequent reads.
+            let (nv_public, _name) = context.nv_read_public(nv_index_handle)
+                .map_err(map_tpm_error)?;
+            let defined_size = nv_public.data_size();
+            if bytes.len() != defined_size {
+                return Err(SecretError::Backend {
+                    backend: BACKEND,
+                    source: format!(
+                        "data length {} does not match NV index defined size {}",
+                        bytes.len(),
+                        defined_size,
+                    ).into(),
+                });
+            }
+
             // Convert directly from the Zeroizing<Vec<u8>> slice to avoid
             // creating a plain Vec<u8> that wouldn't be zeroed on drop.
             let data = MaxNvBuffer::try_from(bytes.as_slice()).map_err(|e| {
                 SecretError::Backend {
                     backend: BACKEND,
-                    source: format!("data too large for NV index: {e}").into(),
+                    source: format!("data too large for NV buffer: {e}").into(),
                 }
             })?;
 
