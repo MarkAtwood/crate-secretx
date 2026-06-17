@@ -96,18 +96,10 @@ enum Mode {
 ///
 /// All operations use a null-auth HMAC session. NV indices and keys must
 /// be provisioned with empty owner-hierarchy authorization.
+#[derive(Debug)]
 pub struct Tpm2Backend {
     mode: Mode,
     tcti: String,
-}
-
-impl std::fmt::Debug for Tpm2Backend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tpm2Backend")
-            .field("mode", &self.mode)
-            .field("tcti", &self.tcti)
-            .finish()
-    }
 }
 
 impl Tpm2Backend {
@@ -175,6 +167,7 @@ impl Tpm2Backend {
     }
 }
 
+/// Parse a hex string (with optional `0x`/`0X` prefix) into a `u32`.
 fn parse_hex_u32(s: &str, label: &str) -> Result<u32, SecretError> {
     let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     u32::from_str_radix(s, 16).map_err(|_| {
@@ -182,6 +175,7 @@ fn parse_hex_u32(s: &str, label: &str) -> Result<u32, SecretError> {
     })
 }
 
+/// Verify `index` falls in the TPM 2.0 owner NV range (`0x01000000..=0x01FFFFFF`).
 fn validate_nv_index(index: u32) -> Result<(), SecretError> {
     if !(0x0100_0000..=0x01FF_FFFF).contains(&index) {
         return Err(SecretError::InvalidUri(format!(
@@ -191,6 +185,7 @@ fn validate_nv_index(index: u32) -> Result<(), SecretError> {
     Ok(())
 }
 
+/// Verify `handle` falls in the TPM 2.0 persistent object range (`0x81000000..=0x81FFFFFF`).
 fn validate_persistent_handle(handle: u32) -> Result<(), SecretError> {
     if !(0x8100_0000..=0x81FF_FFFF).contains(&handle) {
         return Err(SecretError::InvalidUri(format!(
@@ -200,6 +195,7 @@ fn validate_persistent_handle(handle: u32) -> Result<(), SecretError> {
     Ok(())
 }
 
+/// Open a fresh ESAPI context for the given TCTI configuration string.
 fn open_context(tcti: &str) -> Result<Context, SecretError> {
     let tcti_conf = TctiNameConf::from_str(tcti).map_err(|e| SecretError::Backend {
         backend: BACKEND,
@@ -565,6 +561,7 @@ fn normalize_signature(
     }
 }
 
+/// Human-readable label for a [`SigningAlgorithm`], used in error messages.
 fn algorithm_label(algo: SigningAlgorithm) -> &'static str {
     match algo {
         SigningAlgorithm::EcdsaP256Sha256 => "ecdsa-p256",
