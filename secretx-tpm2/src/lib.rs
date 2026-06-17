@@ -262,10 +262,11 @@ fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
 impl SecretStore for Tpm2Backend {
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let Mode::Nv { index } = self.mode else {
-            return Err(SecretError::InvalidUri(
-                "get() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: "get() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
                     .into(),
-            ));
+            });
         };
 
         let tcti = self.tcti.clone();
@@ -317,10 +318,11 @@ impl SecretStore for Tpm2Backend {
 impl WritableSecretStore for Tpm2Backend {
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         let Mode::Nv { index } = self.mode else {
-            return Err(SecretError::InvalidUri(
-                "put() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: "put() requires an NV index URI (secretx:tpm2:nv/...); this is a signing key URI"
                     .into(),
-            ));
+            });
         };
 
         let tcti = self.tcti.clone();
@@ -381,10 +383,11 @@ impl WritableSecretStore for Tpm2Backend {
 impl SigningBackend for Tpm2Backend {
     async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, algorithm } = self.mode else {
-            return Err(SecretError::InvalidUri(
-                "sign() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: "sign() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
                     .into(),
-            ));
+            });
         };
 
         let tcti = self.tcti.clone();
@@ -441,10 +444,11 @@ impl SigningBackend for Tpm2Backend {
 
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, algorithm } = self.mode else {
-            return Err(SecretError::InvalidUri(
-                "public_key_der() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
+            return Err(SecretError::Backend {
+                backend: BACKEND,
+                source: "public_key_der() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
                     .into(),
-            ));
+            });
         };
 
         let tcti = self.tcti.clone();
@@ -489,10 +493,11 @@ impl SigningBackend for Tpm2Backend {
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
         match self.mode {
             Mode::Sign { algorithm, .. } => Ok(algorithm),
-            Mode::Nv { .. } => Err(SecretError::InvalidUri(
-                "algorithm() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
+            Mode::Nv { .. } => Err(SecretError::Backend {
+                backend: BACKEND,
+                source: "algorithm() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
                     .into(),
-            )),
+            }),
         }
     }
 }
