@@ -260,6 +260,12 @@ fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
 
 #[async_trait::async_trait]
 impl SecretStore for Tpm2Backend {
+    /// Read the full contents of the NV index.
+    ///
+    /// Opens a fresh ESAPI context, reads `nv_public.data_size()` bytes
+    /// at offset 0 using a null-auth HMAC session.
+    ///
+    /// Returns `SecretError::Backend` if called on a signing-key URI.
     async fn get(&self) -> Result<SecretValue, SecretError> {
         let Mode::Nv { index } = self.mode else {
             return Err(SecretError::Backend {
@@ -307,6 +313,7 @@ impl SecretStore for Tpm2Backend {
         .map_err(map_join_err)?
     }
 
+    /// Re-reads the NV index (equivalent to [`get`](SecretStore::get)).
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
         self.get().await
     }
@@ -316,6 +323,15 @@ impl SecretStore for Tpm2Backend {
 
 #[async_trait::async_trait]
 impl WritableSecretStore for Tpm2Backend {
+    /// Write `value` to the NV index.
+    ///
+    /// The data length must exactly match the NV index's defined size
+    /// (set at NV index creation time). A size mismatch returns
+    /// `SecretError::Backend`. The maximum single-shot write is bounded
+    /// by the TPM's `MAX_NV_BUFFER_SIZE` (typically 1024–2048 bytes,
+    /// hardware-dependent).
+    ///
+    /// Returns `SecretError::Backend` if called on a signing-key URI.
     async fn put(&self, value: SecretValue) -> Result<(), SecretError> {
         let Mode::Nv { index } = self.mode else {
             return Err(SecretError::Backend {
@@ -381,6 +397,14 @@ impl WritableSecretStore for Tpm2Backend {
 
 #[async_trait::async_trait]
 impl SigningBackend for Tpm2Backend {
+    /// Sign `message` with the persistent TPM key.
+    ///
+    /// Hashes `message` with SHA-256 in software, then sends the digest
+    /// to the TPM for signing. Uses a null-hierarchy hashcheck ticket
+    /// (unrestricted signing keys only — restricted keys will return
+    /// `TPM_RC_TICKET`).
+    ///
+    /// Returns `SecretError::Backend` if called on an NV-index URI.
     async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, algorithm } = self.mode else {
             return Err(SecretError::Backend {
@@ -442,6 +466,13 @@ impl SigningBackend for Tpm2Backend {
         .map_err(map_join_err)?
     }
 
+    /// Export the public key as DER-encoded SubjectPublicKeyInfo (SPKI).
+    ///
+    /// Opens a fresh ESAPI context, reads the public area of the
+    /// persistent key, validates algorithm/curve/scheme, and serializes
+    /// to DER via `picky-asn1-der`.
+    ///
+    /// Returns `SecretError::Backend` if called on an NV-index URI.
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
         let Mode::Sign { handle, algorithm } = self.mode else {
             return Err(SecretError::Backend {
@@ -489,7 +520,7 @@ impl SigningBackend for Tpm2Backend {
     /// Returns the signing algorithm for this key.
     ///
     /// This is a permanent property of the URI — it does not require TPM
-    /// access. Returns `SecretError::InvalidUri` if called on an NV-mode URI.
+    /// access. Returns `SecretError::Backend` if called on an NV-mode URI.
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
         match self.mode {
             Mode::Sign { algorithm, .. } => Ok(algorithm),
