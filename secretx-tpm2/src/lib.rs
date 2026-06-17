@@ -332,9 +332,9 @@ impl WritableSecretStore for Tpm2Backend {
                 .map_err(map_tpm_error)?;
             let nv_index_handle = NvIndexHandle::from(nv_handle);
 
-            // bytes is already Zeroizing<Vec<u8>>; MaxNvBuffer also wraps
-            // Zeroizing internally, so both copies are zeroed on drop.
-            let data = MaxNvBuffer::try_from(bytes.to_vec()).map_err(|e| {
+            // Convert directly from the Zeroizing<Vec<u8>> slice to avoid
+            // creating a plain Vec<u8> that wouldn't be zeroed on drop.
+            let data = MaxNvBuffer::try_from(bytes.as_slice()).map_err(|e| {
                 SecretError::Backend {
                     backend: BACKEND,
                     source: format!("data too large for NV index: {e}").into(),
