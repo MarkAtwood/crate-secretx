@@ -57,28 +57,32 @@ secretx:<backend>:<path>[?options]
 
 | URI | Backend | Notes |
 |-----|---------|-------|
+| | **Local** | |
 | `secretx:env:MY_SECRET` | Environment variable | |
 | `secretx:file:/etc/secrets/key` | File (absolute path) | |
 | `secretx:file:relative/path` | File (relative to CWD) | |
 | `secretx:mem:my-key` | In-process memory | testing, ephemeral, bootstrap |
+| `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
+| | **OS / platform** | |
+| `secretx:desktop:myapp/my-key` | Desktop keychain | macOS Keychain, GNOME Keyring, Windows Credential Manager |
+| `secretx:keyring:myapp/my-key` | Linux kernel keyring | no daemon; Linux only |
+| `secretx:systemd:<name>` | systemd credentials | `$CREDENTIALS_DIRECTORY`; TPM2-encrypted at rest; requires systemd v250+ |
+| `secretx:k8s:default/my-secret` | Kubernetes Secret | `?key=` to select a single data key |
+| | **Cloud** | |
 | `secretx:aws-kms:alias/my-key` | AWS KMS | signing only |
-| `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager | |
-| `secretx:aws-sm:prod/my-secret?field=password` | AWS Secrets Manager | extract one JSON field |
+| `secretx:aws-sm:prod/my-secret` | AWS Secrets Manager | `?field=` to extract one JSON field |
 | `secretx:aws-ssm:prod/my-param` | AWS SSM Parameter Store | `SecureString` decrypted automatically |
 | `secretx:azure-kv:myvault/mysecret` | Azure Key Vault | |
+| `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
+| | **Secret management services** | |
 | `secretx:bitwarden:myproject/MY_SECRET` | Bitwarden Secrets Manager | auth via `BWS_ACCESS_TOKEN` |
 | `secretx:doppler:myproject/prd/MY_SECRET` | Doppler | auth via `DOPPLER_TOKEN` |
-| `secretx:gcp-sm:my-project/my-secret` | GCP Secret Manager | |
-| `secretx:keyring:myapp/my-key` | Linux kernel keyring | no daemon; Linux only |
-| `secretx:desktop:myapp/my-key` | Desktop keychain | macOS Keychain, GNOME Keyring, Windows Credential Manager |
-| `secretx:systemd:<name>` | systemd credentials | `$CREDENTIALS_DIRECTORY`; TPM2-encrypted at rest; requires systemd v250+ |
-| `secretx:local-signing:<path>` | Local key file | signing only; Ed25519, P-256, RSA-PSS |
+| `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
+| | **Hardware** | |
 | `secretx:pkcs11:0/my-key?lib=/usr/lib/libsofthsm2.so` | PKCS#11 HSM | also `SigningBackend`; `lib` from `PKCS11_LIB`, pin from `PKCS11_PIN` |
 | `secretx:tpm2:nv/0x01000001` | TPM 2.0 NV index | read/write; `?tcti=` for transport |
 | `secretx:tpm2:key/0x81000001` | TPM 2.0 signing key | ECDSA P-256 or RSA-PSS; key never leaves chip |
-| `secretx:vault:secret/myapp/key` | HashiCorp Vault | auth via `VAULT_TOKEN` or AppRole |
 | `secretx:wolfhsm:my-key?server=host:8080&client_id=1` | wolfHSM secure element | TCP, `shm:/name`, or `/path` (UDS); TLS planned; `WOLFHSM_SERVER` fallback |
-| `secretx:k8s:default/my-secret` | Kubernetes Secret | `?key=` to select a single data key |
 
 The `from_uri` call constructs the backend and validates the URI syntax. It does not make any
 network call or file read. Fetch happens on first `get`.
@@ -200,27 +204,32 @@ Backend crates have no compile-time feature guards.
 |-------|----------|
 | `secretx-core` | Traits, `SecretValue`, `SecretError` |
 | `secretx-cache` | `CachingStore<S>` — TTL-based in-memory cache over any `SecretStore` |
+| `secretx-signature` | Adapter: bridges `SigningBackend` to RustCrypto `signature::Signer` |
+| `secretx` | Umbrella: re-exports `secretx-core` + `from_uri` dispatch |
+| | **Local** |
 | `secretx-env` | Environment variable backend |
 | `secretx-file` | Filesystem backend |
 | `secretx-mem` | In-process memory backend |
+| `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
+| | **OS / platform** |
+| `secretx-desktop` | Desktop keychain backend (macOS Keychain, GNOME Keyring, Windows Credential Manager) |
+| `secretx-keyring` | Linux kernel keyring backend |
+| `secretx-systemd` | systemd credentials backend (`$CREDENTIALS_DIRECTORY`) |
+| `secretx-k8s` | Kubernetes Secret backend |
+| | **Cloud** |
 | `secretx-aws-kms` | AWS KMS backend (signing only) |
 | `secretx-aws-sm` | AWS Secrets Manager backend |
 | `secretx-aws-ssm` | AWS SSM Parameter Store backend |
 | `secretx-azure-kv` | Azure Key Vault backend |
+| `secretx-gcp-sm` | GCP Secret Manager backend |
+| | **Secret management services** |
 | `secretx-bitwarden` | Bitwarden Secrets Manager backend |
 | `secretx-doppler` | Doppler backend |
-| `secretx-gcp-sm` | GCP Secret Manager backend |
 | `secretx-hashicorp-vault` | HashiCorp Vault backend |
-| `secretx-k8s` | Kubernetes Secret backend |
-| `secretx-keyring` | Linux kernel keyring backend |
-| `secretx-desktop` | Desktop keychain backend (macOS Keychain, GNOME Keyring, Windows Credential Manager) |
-| `secretx-systemd` | systemd credentials backend (`$CREDENTIALS_DIRECTORY`) |
-| `secretx-tpm2` | TPM 2.0 backend (NV storage + signing) |
-| `secretx-local-signing` | Local key file signing backend (Ed25519, P-256, RSA-PSS) |
+| | **Hardware** |
 | `secretx-pkcs11` | PKCS#11 HSM backend |
+| `secretx-tpm2` | TPM 2.0 backend (NV storage + signing) |
 | `secretx-wolfhsm` | wolfHSM secure element backend |
-| `secretx-signature` | Adapter: bridges `SigningBackend` to RustCrypto `signature::Signer` |
-| `secretx` | Umbrella: re-exports `secretx-core` + `from_uri` dispatch |
 
 ---
 
@@ -249,16 +258,20 @@ services not yet supported. See the issue tracker for status.
 
 | Crate | URI scheme | Notes |
 |-------|-----------|-------|
+| | | **OS / platform** |
 | `secretx-keyctl` | `secretx:keyctl:<keyring>/<description>` | Linux kernel keyring (`keyctl` syscalls); zero-daemon, works headless; distinct from `secretx-keyring` (Secret Service D-Bus) |
 | `secretx-dpapi` | `secretx:dpapi:<label>` | Windows DPAPI; machine-scoped or user-scoped encryption; distinct from Credential Manager (`secretx-desktop`) |
 | `secretx-secure-enclave` | `secretx:secure-enclave:<label>` | macOS Secure Enclave; P-256 signing only, keys never leave chip; `SigningBackend` only |
+| | | **Hardware** |
 | `secretx-yubikey` | `secretx:yubikey:<slot>` | YubiKey OATH/OpenPGP beyond PKCS#11/PIV |
 | `secretx-se050` | `secretx:se050:<key-id>` | NXP SE050 / Microchip ATECC608 secure elements; I2C/SPI, not PKCS#11 |
 | `secretx-tee` | `secretx:tee:<uuid>` | ARM TrustZone / OP-TEE secure storage |
 | `secretx-sgx` | `secretx:sgx:<label>` | Intel SGX sealed storage; tied to CPU identity |
+| | | **Encrypted files** |
 | `secretx-sops` | `secretx:sops:<file>#<key-path>` | Mozilla SOPS encrypted YAML/JSON/ENV; popular in GitOps |
 | `secretx-age` | `secretx:age:<path>` | age-encrypted files |
 | `secretx-pass` | `secretx:pass:<entry-path>` | pass (password-store); GPG-encrypted directory tree |
+| | | **Secret management services** |
 | `secretx-1password` | `secretx:1password:<vault>/<item>` | 1Password Connect / CLI |
 | `secretx-conjur` | `secretx:conjur:<variable-id>` | CyberArk Conjur enterprise secrets |
 | `secretx-infisical` | `secretx:infisical:<project>/<env>/<key>` | Infisical open-source secret management |
