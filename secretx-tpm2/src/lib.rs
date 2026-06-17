@@ -28,6 +28,17 @@
 //! authorization. Password-protected or policy-bound objects are not yet
 //! supported.
 //!
+//! # Limitations
+//!
+//! - **Unrestricted signing keys only.** The `sign()` implementation uses a
+//!   null-hierarchy hashcheck ticket for externally-computed digests, which
+//!   the TPM rejects for restricted signing keys (`TPM_RC_TICKET`).
+//!
+//! - **NV read/write is single-shot.** Each operation issues one TPM command,
+//!   limited by the TPM's `MAX_NV_BUFFER_SIZE` (typically 1024–2048 bytes,
+//!   TPM-dependent). NV indices larger than this limit will fail at runtime.
+//!   Most secrets fit comfortably; if yours doesn't, use the `file` backend.
+//!
 //! # Examples
 //!
 //! ```rust,no_run
@@ -410,7 +421,7 @@ impl SigningBackend for Tpm2Backend {
     }
 
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
-        let Mode::Sign { handle, .. } = self.mode else {
+        let Mode::Sign { handle, algorithm } = self.mode else {
             return Err(SecretError::InvalidUri(
                 "public_key_der() requires a key URI (secretx:tpm2:key/...); this is an NV index URI"
                     .into(),
@@ -432,6 +443,9 @@ impl SigningBackend for Tpm2Backend {
             let (public, _name, _qname) = context
                 .read_public(key_handle)
                 .map_err(map_tpm_error)?;
+
+            // Verify the TPM key type matches the URI's ?algorithm= param.
+            validate_key_type(algorithm, &public)?;
 
             // Convert TPM Public to SubjectPublicKeyInfo (SPKI) via the
             // tss-esapi abstraction, then serialize to DER.
@@ -455,7 +469,7 @@ impl SigningBackend for Tpm2Backend {
     /// Returns the signing algorithm for this key.
     ///
     /// This is a permanent property of the URI — it does not require TPM
-    /// access. Returns `SecretError::Backend` if called on an NV-mode URI.
+    /// access. Returns `SecretError::InvalidUri` if called on an NV-mode URI.
     fn algorithm(&self) -> Result<SigningAlgorithm, SecretError> {
         match self.mode {
             Mode::Sign { algorithm, .. } => Ok(algorithm),
@@ -508,6 +522,30 @@ fn algorithm_label(algo: SigningAlgorithm) -> &'static str {
         // descriptive fallback rather than a bare "unknown".
         _ => "unsupported-algorithm",
     }
+}
+
+/// Verify the TPM key's actual type matches the URI's `?algorithm=` parameter.
+fn validate_key_type(
+    expected: SigningAlgorithm,
+    public: &tss_esapi::structures::Public,
+) -> Result<(), SecretError> {
+    use tss_esapi::structures::Public;
+
+    let actual_label = match public {
+        Public::Ecc { .. } => "ecdsa-p256",
+        Public::Rsa { .. } => "rsa-pss-2048",
+        _ => "unsupported",
+    };
+
+    let expected_label = algorithm_label(expected);
+
+    if actual_label != expected_label {
+        return Err(SecretError::AlgorithmMismatch {
+            expected: expected_label,
+            actual: format!("TPM key is {actual_label}"),
+        });
+    }
+    Ok(())
 }
 
 // ── Inventory registration (URI dispatch) ────────────────────────────────────
