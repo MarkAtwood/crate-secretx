@@ -207,7 +207,7 @@ fn open_context(tcti: &str) -> Result<Context, SecretError> {
     })?;
     Context::new(tcti_conf).map_err(|e| SecretError::Unavailable {
         backend: BACKEND,
-        source: format!("failed to connect to TPM: {e}").into(),
+        source: e.into(),
     })
 }
 
@@ -215,7 +215,7 @@ fn open_context(tcti: &str) -> Result<Context, SecretError> {
 fn map_join_err(e: tokio::task::JoinError) -> SecretError {
     SecretError::Backend {
         backend: BACKEND,
-        source: format!("task join error: {e}").into(),
+        source: e.into(),
     }
 }
 
@@ -243,16 +243,15 @@ fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
         tss_esapi::Error::WrapperError(_) => false,
     };
 
-    let msg = e.to_string();
     if is_transient {
         SecretError::Unavailable {
             backend: BACKEND,
-            source: msg.into(),
+            source: e.into(),
         }
     } else {
         SecretError::Backend {
             backend: BACKEND,
-            source: msg.into(),
+            source: e.into(),
         }
     }
 }
