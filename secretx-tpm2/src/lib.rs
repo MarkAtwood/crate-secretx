@@ -39,6 +39,13 @@
 //!   TPM-dependent). NV indices larger than this limit will fail at runtime.
 //!   Most secrets fit comfortably; if yours doesn't, use the `file` backend.
 //!
+//! # Supported algorithms
+//!
+//! | URI `?algorithm=`  | Key type | Curve / Size | Hash   | Signature format          |
+//! |--------------------|----------|--------------|--------|---------------------------|
+//! | `ecdsa-p256` (default) | ECC  | NIST P-256   | SHA-256 | 64 bytes: `r \|\| s`      |
+//! | `rsa-pss-2048`     | RSA      | 2048-bit     | SHA-256 | 256 bytes, big-endian     |
+//!
 //! # Examples
 //!
 //! ```rust,no_run
@@ -252,6 +259,22 @@ fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
     }
 }
 
+/// Construct a null-hierarchy hashcheck ticket for externally-computed digests.
+///
+/// The TPM accepts this ticket for unrestricted signing keys; restricted
+/// keys will reject it with `TPM_RC_TICKET`.
+fn null_hashcheck_ticket() -> Result<tss_esapi::structures::HashcheckTicket, SecretError> {
+    tss_esapi::structures::HashcheckTicket::try_from(tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
+        tag: tss_esapi::constants::tss::TPM2_ST_HASHCHECK,
+        hierarchy: tss_esapi::constants::tss::TPM2_RH_NULL,
+        digest: tss_esapi::tss2_esys::TPM2B_DIGEST {
+            size: 0,
+            buffer: [0u8; 64],
+        },
+    })
+    .map_err(map_tpm_error)
+}
+
 // ── SecretStore (NV read) ────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
@@ -435,20 +458,7 @@ impl SigningBackend for Tpm2Backend {
                     source: format!("failed to create digest: {e}").into(),
                 })?;
 
-            // For unrestricted keys, pass a null-hierarchy hashcheck ticket.
-            // The TPM accepts Null hierarchy for externally-computed digests
-            // on unrestricted signing keys.
-            let validation = tss_esapi::structures::HashcheckTicket::try_from(
-                tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
-                    tag: tss_esapi::constants::tss::TPM2_ST_HASHCHECK,
-                    hierarchy: tss_esapi::constants::tss::TPM2_RH_NULL,
-                    digest: tss_esapi::tss2_esys::TPM2B_DIGEST {
-                        size: 0,
-                        buffer: [0u8; 64],
-                    },
-                },
-            )
-            .map_err(map_tpm_error)?;
+            let validation = null_hashcheck_ticket()?;
 
             let signature = context
                 .execute_with_nullauth_session(|ctx| {
@@ -543,12 +553,22 @@ fn normalize_signature(
         (SigningAlgorithm::EcdsaP256Sha256, TpmSig::EcDsa(ecc)) => {
             let r = ecc.signature_r().value();
             let s = ecc.signature_s().value();
+            // P-256 components are at most 32 bytes; reject anything larger.
+            if r.len() > 32 || s.len() > 32 {
+                return Err(SecretError::Backend {
+                    backend: BACKEND,
+                    source: format!(
+                        "ECDSA P-256 component too large: r={} s={} bytes",
+                        r.len(),
+                        s.len(),
+                    )
+                    .into(),
+                });
+            }
+            // Right-align (zero-pad) each component to 32 bytes.
             let mut out = vec![0u8; 64];
-            // Right-align (zero-pad) each component to 32 bytes
-            let r_offset = 32usize.saturating_sub(r.len());
-            let s_offset = 32usize.saturating_sub(s.len());
-            out[r_offset..32].copy_from_slice(&r[r.len().saturating_sub(32)..]);
-            out[32 + s_offset..64].copy_from_slice(&s[s.len().saturating_sub(32)..]);
+            out[32 - r.len()..32].copy_from_slice(r);
+            out[64 - s.len()..64].copy_from_slice(s);
             Ok(out)
         }
         (SigningAlgorithm::RsaPss2048Sha256, TpmSig::RsaPss(rsa)) => {
