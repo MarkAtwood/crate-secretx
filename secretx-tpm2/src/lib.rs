@@ -384,6 +384,10 @@ impl SigningBackend for Tpm2Backend {
                 .map_err(map_tpm_error)?;
             let key_handle = KeyHandle::from(obj_handle);
 
+            // Validate the TPM key's algorithm/curve/size matches the URI.
+            let (public, _, _) = context.read_public(key_handle).map_err(map_tpm_error)?;
+            validate_key_type(algorithm, &public)?;
+
             let digest = tss_esapi::structures::Digest::try_from(digest_bytes)
                 .map_err(|e| SecretError::Backend {
                     backend: BACKEND,
@@ -524,26 +528,43 @@ fn algorithm_label(algo: SigningAlgorithm) -> &'static str {
     }
 }
 
-/// Verify the TPM key's actual type matches the URI's `?algorithm=` parameter.
+/// Verify the TPM key's actual type, curve, and size match the URI's
+/// `?algorithm=` parameter.
 fn validate_key_type(
     expected: SigningAlgorithm,
     public: &tss_esapi::structures::Public,
 ) -> Result<(), SecretError> {
+    use tss_esapi::interface_types::{ecc::EccCurve, key_bits::RsaKeyBits};
     use tss_esapi::structures::Public;
 
-    let actual_label = match public {
-        Public::Ecc { .. } => "ecdsa-p256",
-        Public::Rsa { .. } => "rsa-pss-2048",
-        _ => "unsupported",
-    };
-
-    let expected_label = algorithm_label(expected);
-
-    if actual_label != expected_label {
-        return Err(SecretError::AlgorithmMismatch {
-            expected: expected_label,
-            actual: format!("TPM key is {actual_label}"),
-        });
+    match (expected, public) {
+        (SigningAlgorithm::EcdsaP256Sha256, Public::Ecc { parameters, .. }) => {
+            if parameters.ecc_curve() != EccCurve::NistP256 {
+                return Err(SecretError::AlgorithmMismatch {
+                    expected: "ecdsa-p256",
+                    actual: format!("TPM key uses curve {:?}", parameters.ecc_curve()),
+                });
+            }
+        }
+        (SigningAlgorithm::RsaPss2048Sha256, Public::Rsa { parameters, .. }) => {
+            if parameters.key_bits() != RsaKeyBits::Rsa2048 {
+                return Err(SecretError::AlgorithmMismatch {
+                    expected: "rsa-pss-2048",
+                    actual: format!("TPM key is RSA-{:?}", parameters.key_bits()),
+                });
+            }
+        }
+        _ => {
+            let actual = match public {
+                Public::Ecc { .. } => "ECC",
+                Public::Rsa { .. } => "RSA",
+                _ => "unsupported key type",
+            };
+            return Err(SecretError::AlgorithmMismatch {
+                expected: algorithm_label(expected),
+                actual: format!("TPM key is {actual}"),
+            });
+        }
     }
     Ok(())
 }
