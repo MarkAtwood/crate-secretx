@@ -211,6 +211,14 @@ fn open_context(tcti: &str) -> Result<Context, SecretError> {
     })
 }
 
+/// Map a `spawn_blocking` join error to [`SecretError::Backend`].
+fn map_join_err(e: tokio::task::JoinError) -> SecretError {
+    SecretError::Backend {
+        backend: BACKEND,
+        source: format!("task join error: {e}").into(),
+    }
+}
+
 /// Classify a TSS error as transient (Unavailable) or permanent (Backend).
 fn map_tpm_error(e: tss_esapi::Error) -> SecretError {
     use tss_esapi::constants::response_code::Tss2ResponseCodeKind;
@@ -296,10 +304,7 @@ impl SecretStore for Tpm2Backend {
             Ok(SecretValue::new(data.value().to_vec()))
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("TPM task panicked: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
     async fn refresh(&self) -> Result<SecretValue, SecretError> {
@@ -367,10 +372,7 @@ impl WritableSecretStore for Tpm2Backend {
             Ok(())
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("TPM task panicked: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 }
 
@@ -435,10 +437,7 @@ impl SigningBackend for Tpm2Backend {
             normalize_signature(algorithm, &signature)
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("TPM task panicked: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
     async fn public_key_der(&self) -> Result<Vec<u8>, SecretError> {
@@ -481,10 +480,7 @@ impl SigningBackend for Tpm2Backend {
             })
         })
         .await
-        .map_err(|e| SecretError::Backend {
-            backend: BACKEND,
-            source: format!("TPM task panicked: {e}").into(),
-        })?
+        .map_err(map_join_err)?
     }
 
     /// Returns the signing algorithm for this key.
