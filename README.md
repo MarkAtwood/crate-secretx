@@ -240,6 +240,27 @@ README in its crate directory. Contributions welcome; see the roadmap issues in 
 | `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
 | `secretx-yandex-lockbox` | `secretx:yandex-lockbox:<secret-id>` | Yandex Cloud Lockbox; Kubernetes ESO provider exists |
 
+## Future backends
+
+Additional backends under consideration. These cover local/hardware mechanisms and third-party
+services not yet supported. See the issue tracker for status.
+
+| Crate | URI scheme | Notes |
+|-------|-----------|-------|
+| `secretx-keyctl` | `secretx:keyctl:<keyring>/<description>` | Linux kernel keyring (`keyctl` syscalls); zero-daemon, works headless; distinct from `secretx-keyring` (Secret Service D-Bus) |
+| `secretx-dpapi` | `secretx:dpapi:<label>` | Windows DPAPI; machine-scoped or user-scoped encryption; distinct from Credential Manager (`secretx-desktop`) |
+| `secretx-secure-enclave` | `secretx:secure-enclave:<label>` | macOS Secure Enclave; P-256 signing only, keys never leave chip; `SigningBackend` only |
+| `secretx-yubikey` | `secretx:yubikey:<slot>` | YubiKey OATH/OpenPGP beyond PKCS#11/PIV |
+| `secretx-se050` | `secretx:se050:<key-id>` | NXP SE050 / Microchip ATECC608 secure elements; I2C/SPI, not PKCS#11 |
+| `secretx-tee` | `secretx:tee:<uuid>` | ARM TrustZone / OP-TEE secure storage |
+| `secretx-sgx` | `secretx:sgx:<label>` | Intel SGX sealed storage; tied to CPU identity |
+| `secretx-sops` | `secretx:sops:<file>#<key-path>` | Mozilla SOPS encrypted YAML/JSON/ENV; popular in GitOps |
+| `secretx-age` | `secretx:age:<path>` | age-encrypted files |
+| `secretx-pass` | `secretx:pass:<entry-path>` | pass (password-store); GPG-encrypted directory tree |
+| `secretx-1password` | `secretx:1password:<vault>/<item>` | 1Password Connect / CLI |
+| `secretx-conjur` | `secretx:conjur:<variable-id>` | CyberArk Conjur enterprise secrets |
+| `secretx-infisical` | `secretx:infisical:<project>/<env>/<key>` | Infisical open-source secret management |
+
 ---
 
 ## Security guarantees
