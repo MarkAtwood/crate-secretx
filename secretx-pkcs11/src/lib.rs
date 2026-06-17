@@ -335,9 +335,10 @@ impl Pkcs11Backend {
         if u64::from(bits) == 2048 {
             Ok(SigningAlgorithm::RsaPss2048Sha256)
         } else {
-            Err(pkcs11_err(format!(
-                "unsupported RSA key size: {bits} bits; only 2048-bit RSA is supported"
-            )))
+            Err(SecretError::AlgorithmMismatch {
+                expected: "rsa-pss-2048",
+                actual: format!("RSA-{bits}"),
+            })
         }
     }
 
@@ -361,10 +362,10 @@ impl Pkcs11Backend {
         if params == P256_OID {
             Ok(SigningAlgorithm::EcdsaP256Sha256)
         } else {
-            Err(pkcs11_err(format!(
-                "unsupported EC curve (CKA_EC_PARAMS = {:02x?}); only P-256 is supported",
-                params
-            )))
+            Err(SecretError::AlgorithmMismatch {
+                expected: "ecdsa-p256",
+                actual: format!("EC curve CKA_EC_PARAMS={:02x?}", params),
+            })
         }
     }
 }
@@ -470,9 +471,10 @@ fn pkcs11_detect_algorithm(
     match kt {
         KeyType::EC => Pkcs11Backend::detect_ec_algorithm(&session, handle),
         KeyType::RSA => Pkcs11Backend::detect_rsa_algorithm(&session, handle),
-        _ => Err(pkcs11_err(format!(
-            "unsupported key type: {kt}; this backend supports only EC P-256 and RSA-2048"
-        ))),
+        _ => Err(SecretError::AlgorithmMismatch {
+            expected: "ecdsa-p256 or rsa-pss-2048",
+            actual: format!("key type {kt}"),
+        }),
     }
 }
 
