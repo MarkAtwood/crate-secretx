@@ -552,7 +552,7 @@ fn validate_key_type(
     public: &tss_esapi::structures::Public,
 ) -> Result<(), SecretError> {
     use tss_esapi::interface_types::{ecc::EccCurve, key_bits::RsaKeyBits};
-    use tss_esapi::structures::Public;
+    use tss_esapi::structures::{EccScheme, Public, RsaScheme};
 
     match (expected, public) {
         (SigningAlgorithm::EcdsaP256Sha256, Public::Ecc { parameters, .. }) => {
@@ -562,12 +562,25 @@ fn validate_key_type(
                     actual: format!("TPM key uses curve {:?}", parameters.ecc_curve()),
                 });
             }
+            // Null scheme means the key accepts any scheme at sign time.
+            if !matches!(parameters.ecc_scheme(), EccScheme::EcDsa(_) | EccScheme::Null) {
+                return Err(SecretError::AlgorithmMismatch {
+                    expected: "ecdsa-p256 (ECDSA scheme)",
+                    actual: format!("TPM key uses scheme {:?}", parameters.ecc_scheme()),
+                });
+            }
         }
         (SigningAlgorithm::RsaPss2048Sha256, Public::Rsa { parameters, .. }) => {
             if parameters.key_bits() != RsaKeyBits::Rsa2048 {
                 return Err(SecretError::AlgorithmMismatch {
                     expected: "rsa-pss-2048",
                     actual: format!("TPM key is RSA-{:?}", parameters.key_bits()),
+                });
+            }
+            if !matches!(parameters.rsa_scheme(), RsaScheme::RsaPss(_) | RsaScheme::Null) {
+                return Err(SecretError::AlgorithmMismatch {
+                    expected: "rsa-pss-2048 (RSA-PSS scheme)",
+                    actual: format!("TPM key uses scheme {:?}", parameters.rsa_scheme()),
                 });
             }
         }
