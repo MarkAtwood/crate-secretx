@@ -240,6 +240,8 @@ README in its crate directory. Contributions welcome; see the roadmap issues in 
 | `secretx-tencent-ssm` | `secretx:tencent-ssm:<region>/<secret-name>` | Tencent Cloud SSM; OSCCA SM4 available for China-region deployments |
 | `secretx-yandex-lockbox` | `secretx:yandex-lockbox:<secret-id>` | Yandex Cloud Lockbox; Kubernetes ESO provider exists |
 
+**Need one of these sooner?** Contact [info@wolfssl.com](mailto:info@wolfssl.com) for sponsored development.
+
 ## Future backends
 
 Additional backends under consideration. These cover local/hardware mechanisms and third-party
@@ -260,6 +262,8 @@ services not yet supported. See the issue tracker for status.
 | `secretx-1password` | `secretx:1password:<vault>/<item>` | 1Password Connect / CLI |
 | `secretx-conjur` | `secretx:conjur:<variable-id>` | CyberArk Conjur enterprise secrets |
 | `secretx-infisical` | `secretx:infisical:<project>/<env>/<key>` | Infisical open-source secret management |
+
+**Need one of these sooner?** Contact [info@wolfssl.com](mailto:info@wolfssl.com) for sponsored development.
 
 ---
 
