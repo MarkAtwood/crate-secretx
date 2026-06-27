@@ -1,0 +1,7 @@
+{
+  "author": "Mark Atwood",
+  "created_at": "2026-06-17T02:12:57Z",
+  "id": "019ed35a-62da-7cfe-a04c-b46e9fdf7ab0",
+  "issue_id": "crate-secretsx-pu1q.5",
+  "text": "Design decision: splitting into Tpm2NvBackend + Tpm2SignBackend would prevent misuse at compile time, but changes the public API. The mode-wrong error variant has been fixed to Backend (crate-secretsx-pu1q.13), making the runtime behavior correct. Splitting the types is a semver-breaking change \u2014 recommend deferring to next major version."
+}

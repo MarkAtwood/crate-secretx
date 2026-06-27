@@ -1,0 +1,7 @@
+{
+  "author": "Mark Atwood",
+  "created_at": "2026-06-16T00:21:49Z",
+  "id": "019ecdce-476e-7405-97a4-9891860f8e9f",
+  "issue_id": "crate-secretsx-6xym.6",
+  "text": "Cannot simply add #[non_exhaustive] \u2014 all 20+ inventory::submit! calls across backend crates use struct literal construction from outside secretx-core, which #[non_exhaustive] prohibits. Fix requires: (1) add BackendRegistration::new(name, factory) constructors, (2) update all inventory::submit! calls to use constructors, (3) then add #[non_exhaustive]. This is a multi-crate refactor. Recommend deferring to a dedicated PR."
+}

@@ -1,0 +1,7 @@
+{
+  "author": "Mark Atwood",
+  "created_at": "2026-06-17T01:53:14Z",
+  "id": "019ed348-55fe-75ff-96f0-8f3a79641c54",
+  "issue_id": "crate-secretsx-pu1q.8",
+  "text": "Needs human decision: (1) Add golden-vector test \u2014 requires real TPM or swtpm to generate reference DER. (2) Switch to RustCrypto der/spki crate \u2014 larger change, better ecosystem alignment but different dep tree. (3) Accept the risk and document it \u2014 picky-asn1-der 0.5 is stable and DER encoding is canonical by spec. Recommend option 3 with a comment noting the dependency, defer golden-vector test until swtpm integration harness exists."
+}

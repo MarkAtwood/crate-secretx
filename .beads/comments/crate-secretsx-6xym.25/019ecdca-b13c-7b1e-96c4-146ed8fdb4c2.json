@@ -1,0 +1,7 @@
+{
+  "author": "Mark Atwood",
+  "created_at": "2026-06-16T00:17:53Z",
+  "id": "019ecdca-b13c-7b1e-96c4-146ed8fdb4c2",
+  "issue_id": "crate-secretsx-6xym.25",
+  "text": "Trait design decision needed. SigningBackend::algorithm() is sync but pkcs11 needs HSM I/O on cold cache. Options: (a) error-if-uncached forces callers to call sign() first to warm the cache, (b) add async prime_algorithm() to trait, (c) accept the limitation with docs. Recommend (c) for now since sign() already warms the cache as a side-effect and the doc comment warns callers. Revisit if users hit this."
+}

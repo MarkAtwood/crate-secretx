@@ -1,0 +1,18 @@
+{
+  "auto_compact_enabled": "false",
+  "compact_batch_size": "50",
+  "compact_parallel_workers": "5",
+  "compact_tier1_days": "30",
+  "compact_tier1_dep_levels": "2",
+  "compact_tier2_commits": "100",
+  "compact_tier2_days": "90",
+  "compact_tier2_dep_levels": "5",
+  "compaction_enabled": "false",
+  "issue_prefix": "crate-secretsx",
+  "kv.memory.cargo-hack-no-dev-deps-temporarily-patches-cargo": "cargo-hack --no-dev-deps temporarily patches Cargo.toml files in-place to remove dev-dep sections, and leaves them corrupted if the process is interrupted. Do NOT use --no-dev-deps in quality gates or background tasks in this project. Use plain 'cargo hack check --feature-powerset' instead.",
+  "kv.memory.cargo-powerset-pairwise": "In the secretx project, feature powerset tests must be PAIRWISE only (not exhaustive N-wise). The full powerset (2^18 for the umbrella crate) is too many combinations to run. Use 'cargo hack check --feature-powerset --depth 2' instead of the full powerset. Update all CLAUDE.md references accordingly. Reason: user explicitly requested this on 2026-04-26 after a full powerset run hung for 30+ minutes.",
+  "kv.memory.for-secretx-backends-that-can-t-be-integration": "For secretx backends that can't be integration-tested (azure-kv, gcp-sm, bitwarden, doppler, keyring), shallow-clone the upstream SDK crates into ~/GIT and use their source as a reference oracle \u2014 e.g. check error types, auth flows, and API shapes against the real SDK code rather than guessing. Example: git clone --depth=1 https://github.com/Azure/azure-sdk-for-rust ~/GIT/azure-sdk-for-rust",
+  "kv.memory.in-secretx-review-loops-prompt-review-myoss-md": "In secretx review loops (PROMPT-review-myoss.md + PROMPT-do-beads.md), committing after each fix is permitted without asking. Pushing still requires explicit confirmation.",
+  "kv.memory.integration-test-status-for-secretx-backends-tested-2026": "Integration test status for secretx backends: VERIFIED against real services: aws-sm (AWS SM), aws-ssm (AWS SSM), aws-kms (AWS KMS ECDSA+RSA-PSS), hashicorp-vault (local vault dev server), pkcs11 (SoftHSM2 EC P256 sign + data object get), gcp-sm (GCP Secret Manager, project=amplified-brook-484120-a5, secret=secretx-test, tested 2026-04-28), keyring (Linux headless via dbus-run-session + gnome-keyring-daemon, tested 2026-04-28). UNIT-TESTS-ONLY (no live service): azure-kv, doppler, bitwarden (needs Secrets Manager account - personal account may not have it), wolfhsm (stub only - returns Unavailable). Local backends fully tested: env, file, local-signing, cache.",
+  "kv.memory.vault-backend-do-not-file-review-findings-about": "vault backend: do not file review findings about edge cases (empty-map put/get inconsistency, etc.) until the backend has been integration-tested against a real Vault server. Speculative correctness bugs in vault are noise until we have a live test harness."
+}

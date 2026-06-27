@@ -1,0 +1,7 @@
+{
+  "author": "Mark Atwood",
+  "created_at": "2026-06-17T03:17:24Z",
+  "id": "019ed395-63fe-77b5-8b8a-0ff8a983af5e",
+  "issue_id": "crate-secretsx-pu1q.18",
+  "text": "Cross-crate naming convention. Current names: map_tpm_error (tpm2), classify_ck (pkcs11), classify_kms_sdk_error (aws-kms). Recommend standardizing to classify_<backend>_error but this touches 3 crates and is cosmetic. Defer to a workspace-wide naming pass."
+}
